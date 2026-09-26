@@ -6,7 +6,8 @@ cd "$(dirname "$0")"
 echo "→ Compilando…"
 swift build -c release
 
-APP="LimpiadorMac.app"
+FINAL="LimpiadorMac.app"
+APP="LimpiadorMac.nueva.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/LimpiadorMac "$APP/Contents/MacOS/"
@@ -26,4 +27,10 @@ rm -rf "$TMP"
 echo "→ Firmando…"
 codesign --force --deep --sign - "$APP"
 
-echo "✓ Listo: $(pwd)/$APP"
+# Cambio de golpe: la app anterior se reemplaza en un instante.
+rm -rf "$FINAL.vieja"
+[ -d "$FINAL" ] && mv "$FINAL" "$FINAL.vieja"
+mv "$APP" "$FINAL"
+rm -rf "$FINAL.vieja"
+
+echo "✓ Listo: $(pwd)/$FINAL (versión $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$FINAL/Contents/Info.plist"))"

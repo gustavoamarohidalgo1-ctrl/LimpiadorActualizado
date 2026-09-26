@@ -29,7 +29,7 @@ struct VistaResumen: View {
     private var encabezado: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("LimpiadorMac").font(.largeTitle.weight(.bold))
-            Text("MacBook Air (M2) · 16 GB · SSD de 256 GB")
+            Text("MacBook Air (M2) · 16 GB · SSD de 256 GB · versión \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
                 .foregroundStyle(.secondary)
         }
     }
