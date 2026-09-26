@@ -10,10 +10,9 @@ enum Seccion: Hashable {
 
 @MainActor
 final class Almacen: ObservableObject {
-    @Published var elementos: [Elemento] = []
+    @Published var elementos: [Elemento] = [] { didSet { recalcular() } }
     @Published var analizando = false
-    @Published var progreso: Double = 0
-    @Published var mensaje = ""
+    @Published var estado = EstadoAnalisis(fraccion: 0, fase: 0, mensaje: "")
     @Published var analizado = false
     @Published var disco = InfoDisco.actual()
     @Published var limpiando = false
@@ -23,6 +22,17 @@ final class Almacen: ObservableObject {
     @Published var tamanoPapelera: Int64 = 0
     @Published var accesoTotal = Seguridad.tieneAccesoTotal()
     @Published var seccion: Seccion? = .resumen
+    /// Elemento que se muestra en el panel de detalle.
+    @Published var detalle: Elemento.ID?
+    @Published var ultimaLimpieza: LimpiezaGuardada? = Historial.cargarUltima()
+    @Published var mensajeDeshacer: String?
+    @Published private(set) var indice: Indice?
+    @Published private(set) var bytesSeleccionados: Int64 = 0
+    @Published private(set) var efectivos: [Elemento] = []
+    @Published private(set) var totales: [Categoria: Int64] = [:]
+    @Published private(set) var totalesSeleccionados: [Categoria: Int64] = [:]
+    @Published private(set) var totalEncontrado: Int64 = 0
+    @Published private(set) var duracionAnalisis: TimeInterval = 0
 
     // MARK: Análisis
 
@@ -31,23 +41,24 @@ final class Almacen: ObservableObject {
         analizando = true
         analizado = false
         elementos = []
-        progreso = 0
         resultado = nil
+        detalle = nil
         accesoTotal = Seguridad.tieneAccesoTotal()
+        estado = EstadoAnalisis(fraccion: 0, fase: 0, mensaje: "Preparando…")
+        let inicio = Date()
         Task.detached(priority: .userInitiated) {
-            Escaner().ejecutar(
-                progreso: { f, m in
-                    Task { @MainActor in self.progreso = f; self.mensaje = m }
-                },
-                entrega: { nuevos in
-                    Task { @MainActor in self.elementos.append(contentsOf: nuevos) }
-                })
+            let indice = Escaner().ejecutar(
+                progreso: { e in Task { @MainActor in self.estado = e } },
+                entrega: { nuevos in Task { @MainActor in self.elementos.append(contentsOf: nuevos) } })
             let papelera = Limpiador.tamanoPapelera()
             await MainActor.run {
+                self.indice = indice
                 self.analizando = false
                 self.analizado = true
+                self.duracionAnalisis = Date().timeIntervalSince(inicio)
                 self.disco = InfoDisco.actual()
                 self.tamanoPapelera = papelera
+                self.ultimaLimpieza = Historial.cargarUltima()
             }
         }
     }
@@ -58,30 +69,80 @@ final class Almacen: ObservableObject {
         elementos.filter { $0.categoria == c }
     }
 
-    func total(de c: Categoria) -> Int64 {
-        elementos.lazy.filter { $0.categoria == c }.reduce(0) { $0 + $1.tamano }
+    func total(de c: Categoria) -> Int64 { totales[c] ?? 0 }
+
+    func totalSeleccionado(de c: Categoria) -> Int64 { totalesSeleccionados[c] ?? 0 }
+
+    func elemento(_ id: Elemento.ID?) -> Elemento? {
+        guard let id else { return nil }
+        return elementos.first { $0.id == id }
     }
 
-    func totalSeleccionado(de c: Categoria) -> Int64 {
-        efectivos.lazy.filter { $0.categoria == c }.reduce(0) { $0 + $1.tamano }
+    /// Lo que conviene revisar sí o sí: elementos con avisos graves.
+    var avisosImportantes: [Elemento] {
+        elementos.filter { el in el.motivos.contains { $0.nivel == .peligro } }
+            .sorted { $0.tamano > $1.tamano }
     }
 
-    /// Lo seleccionado, sin contar dos veces una carpeta que está dentro de otra también seleccionada.
-    var efectivos: [Elemento] {
-        let sel = elementos.filter(\.seleccionado).sorted { $0.rutaPrincipal.path.count < $1.rutaPrincipal.path.count }
-        var carpetas: [String] = []
-        var r: [Elemento] = []
-        for el in sel {
-            let p = el.rutaPrincipal.path
-            if carpetas.contains(where: { p == $0 || p.hasPrefix($0 + "/") }) { continue }
-            if case .borrar = el.accion { carpetas.append(contentsOf: el.rutas.map(\.path)) }
-            r.append(el)
+    /// Qué elemento del análisis corresponde a una ruta (para el explorador).
+    func elemento(enRuta ruta: String) -> Elemento? {
+        elementos.first { el in el.rutas.contains { $0.path == ruta } }
+    }
+
+    /// Todos los totales cuentan cada ruta una sola vez, aunque esté en dos elementos
+    /// (el emulador entero y su «Restablecer») o dentro de otra carpeta ya contada.
+    private func recalcular() {
+        var t: [Categoria: Int64] = [:]
+        var s: [Categoria: Int64] = [:]
+        let porCategoria = Dictionary(grouping: elementos, by: \.categoria)
+        for (c, lista) in porCategoria {
+            t[c] = Self.sumaSinRepetir(lista)
+            s[c] = Self.sumaSinRepetir(lista.filter(\.seleccionado))
         }
-        return r
+        totales = t
+        totalesSeleccionados = s
+        totalEncontrado = Self.sumaSinRepetir(elementos)
+
+        let seleccionados = elementos.filter(\.seleccionado)
+        bytesSeleccionados = Self.sumaSinRepetir(seleccionados)
+        // Un elemento se limpia si le queda alguna ruta que no esté dentro de otra seleccionada.
+        let rutas = Set(seleccionados.filter { $0.accion == .borrar }.flatMap { $0.rutas.map(\.path) })
+        efectivos = seleccionados.filter { el in
+            guard el.accion == .borrar else { return true }
+            return el.rutas.contains { !Self.dentroDe($0.path, rutas) }
+        }
     }
 
-    var bytesSeleccionados: Int64 { efectivos.reduce(0) { $0 + $1.tamano } }
-    var totalEncontrado: Int64 { Categoria.allCases.reduce(0) { $0 + total(de: $1) } }
+    private static func sumaSinRepetir(_ lista: [Elemento]) -> Int64 {
+        var total: Int64 = 0
+        var pares: [(String, Int64)] = []
+        for el in lista {
+            if el.accion != .borrar || el.tamanoFijo != nil {
+                total += el.tamano
+                continue
+            }
+            for (i, u) in el.rutas.enumerated() {
+                pares.append((u.path, i < el.tamanosRutas.count ? el.tamanosRutas[i] : 0))
+            }
+        }
+        pares.sort { $0.0.count < $1.0.count }
+        var contadas = Set<String>()
+        for (ruta, bytes) in pares where !contadas.contains(ruta) && !dentroDe(ruta, contadas) {
+            contadas.insert(ruta)
+            total += bytes
+        }
+        return total
+    }
+
+    /// ¿Alguna carpeta superior de `ruta` está en el conjunto?
+    private static func dentroDe(_ ruta: String, _ conjunto: Set<String>) -> Bool {
+        var actual = Substring(ruta)
+        while let barra = actual.lastIndex(of: "/"), barra > actual.startIndex {
+            actual = actual[..<barra]
+            if conjunto.contains(String(actual)) { return true }
+        }
+        return false
+    }
 
     // MARK: Selección
 
@@ -98,13 +159,23 @@ final class Almacen: ObservableObject {
     }
 
     func seleccionar(_ c: Categoria, _ criterio: (Elemento) -> Bool) {
-        for i in elementos.indices where elementos[i].categoria == c {
-            elementos[i].seleccionado = criterio(elementos[i])
-        }
+        var copia = elementos
+        for i in copia.indices where copia[i].categoria == c { copia[i].seleccionado = criterio(copia[i]) }
+        elementos = copia
     }
 
+    /// Lo que recomendó el análisis: seguro, sin avisos y que no se esté usando.
     func seleccionarRecomendados() {
-        for i in elementos.indices { elementos[i].seleccionado = elementos[i].riesgo == .seguro }
+        var copia = elementos
+        for i in copia.indices {
+            copia[i].seleccionado = copia[i].recomendado && copia[i].avisos.isEmpty && !copia[i].abiertoAhora
+        }
+        elementos = copia
+    }
+
+    func irA(_ el: Elemento) {
+        seccion = .categoria(el.categoria)
+        detalle = el.id
     }
 
     // MARK: Limpieza
@@ -121,9 +192,11 @@ final class Almacen: ObservableObject {
             let papelera = Limpiador.tamanoPapelera()
             await MainActor.run {
                 let limpiados = Set(aLimpiar.map(\.id))
-                // Quita de la lista lo que se limpió (lo que falló sigue apareciendo).
+                let omitidos = Set(r.omitidos)
+                // Quita de la lista lo que se limpió (lo omitido o fallido sigue apareciendo).
                 self.elementos.removeAll { el in
-                    el.accion == .borrar
+                    guard !omitidos.contains(where: { $0.hasPrefix(el.nombre + ":") }) else { return false }
+                    return el.accion == .borrar
                         ? !el.rutas.contains(where: Rutas.existe)
                         : limpiados.contains(el.id)
                 }
@@ -131,6 +204,29 @@ final class Almacen: ObservableObject {
                 self.limpiando = false
                 self.disco = InfoDisco.actual()
                 self.tamanoPapelera = papelera
+                self.ultimaLimpieza = Historial.cargarUltima()
+                self.mensajeDeshacer = nil
+            }
+        }
+    }
+
+    func deshacer() {
+        guard let l = ultimaLimpieza, !limpiando else { return }
+        limpiando = true
+        mensajeLimpieza = "Devolviendo todo a su sitio…"
+        Task.detached {
+            let r = Historial.deshacer(l)
+            let papelera = Limpiador.tamanoPapelera()
+            await MainActor.run {
+                self.limpiando = false
+                self.ultimaLimpieza = nil
+                self.tamanoPapelera = papelera
+                self.disco = InfoDisco.actual()
+                var texto = "Devolví \(r.restaurados) \(r.restaurados == 1 ? "elemento" : "elementos") a su sitio (\(Formato.bytes(r.bytes)))."
+                if !r.errores.isEmpty { texto += " \(r.errores.count) no se pudieron devolver." }
+                self.mensajeDeshacer = texto
+                self.resultado = nil
+                // Lo restaurado vuelve a aparecer en el próximo análisis.
             }
         }
     }
@@ -147,6 +243,7 @@ final class Almacen: ObservableObject {
                 self.limpiando = false
                 self.disco = InfoDisco.actual()
                 self.tamanoPapelera = papelera
+                self.ultimaLimpieza = nil
                 self.elementos.removeAll { $0.accion == .vaciarPapelera }
                 self.resultado = ResultadoLimpieza(
                     elementosLimpiados: 1, bytesLimpiados: max(0, despues - antes), libreAntes: antes,
@@ -160,9 +257,31 @@ final class Almacen: ObservableObject {
     func actualizarDisco() {
         disco = InfoDisco.actual()
         accesoTotal = Seguridad.tieneAccesoTotal()
+        ultimaLimpieza = Historial.cargarUltima()
         Task.detached {
             let p = Limpiador.tamanoPapelera()
             await MainActor.run { self.tamanoPapelera = p }
+        }
+    }
+
+    /// Vuelve a mirar qué apps están abiertas (por si el usuario las cerró tras el análisis).
+    func comprobarAppsAbiertas() {
+        Task.detached {
+            let p = Procesos.capturar()
+            await MainActor.run {
+                var copia = self.elementos
+                for i in copia.indices {
+                    guard let uso = copia[i].enUso else { continue }
+                    let abierta = p.estaEnUso(uso)
+                    if copia[i].abiertoAhora && !abierta {
+                        copia[i].abiertoAhora = false
+                        copia[i].motivos.removeAll { $0.icono == "macwindow.badge.plus" || $0.icono == "play.circle.fill" }
+                    } else if abierta {
+                        copia[i].abiertoAhora = true
+                    }
+                }
+                self.elementos = copia
+            }
         }
     }
 
@@ -176,5 +295,9 @@ final class Almacen: ObservableObject {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    func abrirHistorial() {
+        if Rutas.existe(Historial.registroURL) { NSWorkspace.shared.open(Historial.registroURL) }
     }
 }

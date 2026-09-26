@@ -7,7 +7,7 @@ struct VistaPrincipal: View {
     var body: some View {
         NavigationSplitView {
             BarraLateral()
-                .navigationSplitViewColumnWidth(min: 290, ideal: 310, max: 380)
+                .navigationSplitViewColumnWidth(min: 260, ideal: 280, max: 340)
         } detail: {
             Group {
                 switch almacen.seccion ?? .resumen {
@@ -40,25 +40,28 @@ struct VistaPrincipal: View {
         .sheet(isPresented: $mostrarConfirmacion) {
             HojaConfirmacion()
         }
-        .sheet(item: Binding(get: { almacen.resultado.map { ResultadoID(r: $0) } },
-                             set: { if $0 == nil { almacen.resultado = nil } })) { item in
-            HojaResultado(resultado: item.r)
+        .sheet(item: $almacen.resultado) { r in
+            HojaResultado(resultado: r)
         }
         .onAppear {
             almacen.actualizarDisco()
-            // `--analizar [categoria]` arranca el análisis al abrir (útil para probar la interfaz).
+            // Opciones para probar la interfaz: `--analizar [categoría|explorador] [--detalle]`.
+            // Ninguna opción abre la confirmación de limpieza: eso solo lo hace el usuario.
             let args = CommandLine.arguments
             if let i = args.firstIndex(of: "--analizar") {
                 almacen.analizar()
                 if i + 1 < args.count, let c = Categoria(rawValue: args[i + 1]) { almacen.seccion = .categoria(c) }
+                if i + 1 < args.count, args[i + 1] == "explorador" { almacen.seccion = .explorador }
+            }
+        }
+        .onChange(of: almacen.analizado) { _, listo in
+            let args = CommandLine.arguments
+            guard listo else { return }
+            if args.contains("--detalle"), case .categoria(let c) = almacen.seccion ?? .resumen {
+                almacen.detalle = almacen.elementos(de: c).sorted { $0.tamano > $1.tamano }.first?.id
             }
         }
     }
-}
-
-private struct ResultadoID: Identifiable {
-    let id = UUID()
-    let r: ResultadoLimpieza
 }
 
 struct BarraLateral: View {
@@ -154,21 +157,30 @@ struct BarraLimpiar: View {
 
     var body: some View {
         let seleccion = almacen.efectivos
+        let delicados = seleccion.filter { $0.riesgo != .seguro }.count
         HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(seleccion.isEmpty ? "Nada seleccionado" : "Seleccionado: \(Formato.bytes(almacen.bytesSeleccionados))")
                     .font(.title3.weight(.semibold))
                     .contentTransition(.numericText())
-                Text(seleccion.isEmpty
-                     ? "Marca lo que quieras borrar en cada categoría."
-                     : "\(seleccion.count) elementos en \(Set(seleccion.map(\.categoria)).count) categorías")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Group {
+                    if seleccion.isEmpty {
+                        Text("Marca lo que quieras borrar en cada categoría.")
+                    } else if delicados > 0 {
+                        Text("\(seleccion.count) elementos · \(delicados) para revisar antes")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("\(seleccion.count) elementos, todos seguros")
+                            .foregroundStyle(.green)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Spacer()
             Button("Seleccionar lo recomendado") { almacen.seleccionarRecomendados() }
                 .controlSize(.large)
-                .help("Marca solo lo que es seguro borrar")
+                .help("Marca solo lo que es seguro y no tiene ningún aviso")
             Button {
                 mostrarConfirmacion = true
             } label: {
@@ -177,7 +189,6 @@ struct BarraLimpiar: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .keyboardShortcut(.defaultAction)
             .disabled(seleccion.isEmpty || almacen.analizando || almacen.limpiando)
         }
         .padding(.horizontal, 20)

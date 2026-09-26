@@ -8,12 +8,15 @@ struct VistaResumen: View {
             VStack(alignment: .leading, spacing: 24) {
                 encabezado
                 if !almacen.accesoTotal { avisoAcceso }
+                if let mensaje = almacen.mensajeDeshacer { avisoDeshecho(mensaje) }
+                if let ultima = almacen.ultimaLimpieza, !almacen.analizando { tarjetaDeshacer(ultima) }
                 tarjetaDisco
                 if almacen.analizando {
                     tarjetaProgreso
                 } else if !almacen.analizado {
                     botonInicial
                 }
+                if almacen.analizado && !almacen.avisosImportantes.isEmpty { tarjetaAvisos }
                 if almacen.analizado || almacen.analizando { cuadricula }
             }
             .padding(28)
@@ -36,14 +39,46 @@ struct VistaResumen: View {
             Image(systemName: "lock.shield.fill").font(.title2).foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Para un análisis completo, dale «Acceso total al disco»").font(.headline)
-                Text("Sin ese permiso no puedo medir la Papelera ni algunas carpetas protegidas. Abre Ajustes, activa LimpiadorMac en la lista (o agrégala con +) y vuelve a abrir la app.")
+                Text("Sin ese permiso no puedo medir la Papelera, las cachés de apps de la App Store ni las copias de seguridad de tu iPhone. Abre Ajustes, activa LimpiadorMac en la lista (o agrégala con +) y vuelve a abrir la app.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
             Button("Abrir Ajustes") { almacen.abrirAccesoTotal() }
         }
         .padding(14)
         .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func avisoDeshecho(_ mensaje: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "arrow.uturn.backward.circle.fill").font(.title2).foregroundStyle(.green)
+            Text(mensaje).font(.callout.weight(.medium))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Volver a analizar") { almacen.analizar() }
+        }
+        .padding(14)
+        .background(Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func tarjetaDeshacer(_ l: LimpiezaGuardada) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "trash.circle.fill").font(.title2).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Tu última limpieza está en la Papelera").font(.headline)
+                Text("\(Formato.haceCuanto(l.fecha)) enviaste \(l.movimientos.count) \(l.movimientos.count == 1 ? "cosa" : "cosas") (\(Formato.bytes(l.bytes))). Puedes devolverlas a su sitio o vaciar la Papelera para liberar el espacio.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                almacen.deshacer()
+            } label: {
+                Label("Deshacer", systemImage: "arrow.uturn.backward")
+            }
+            .disabled(almacen.limpiando)
+            BotonVaciarPapelera()
+        }
+        .padding(14)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var tarjetaDisco: some View {
@@ -79,13 +114,18 @@ struct VistaResumen: View {
                     .foregroundStyle(.orange)
                     .font(.callout)
             }
-            if almacen.tamanoPapelera > 50_000_000 {
+            if almacen.tamanoPapelera > 50_000_000 && almacen.ultimaLimpieza == nil {
                 HStack {
                     Label("La Papelera ocupa \(Formato.bytes(almacen.tamanoPapelera))", systemImage: "trash")
                     Spacer()
                     BotonVaciarPapelera()
                 }
                 .font(.callout)
+            }
+            if almacen.analizado, let indice = almacen.indice {
+                Text("Revisé \(Formato.numero(indice.archivosTotales)) archivos (\(Formato.bytes(indice.bytesTotales))) en \(Int(almacen.duracionAnalisis.rounded())) s.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(20)
@@ -98,10 +138,10 @@ struct VistaResumen: View {
                 .font(.system(size: 54))
                 .foregroundStyle(.tint)
             Text("Analiza tu Mac a fondo").font(.title2.weight(.semibold))
-            Text("Reviso emuladores, cachés, restos de apps desinstaladas, proyectos, instaladores y archivos grandes. No se borra nada hasta que tú lo confirmes.")
+            Text("Reviso archivo por archivo tu carpeta personal: emuladores, cachés, restos de apps, proyectos, instaladores, duplicados y archivos grandes. Te explico qué es cada cosa y te aviso de lo que no deberías borrar. No se borra nada hasta que tú lo confirmes.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: 520)
+                .frame(maxWidth: 560)
             Button {
                 almacen.analizar()
             } label: {
@@ -117,19 +157,84 @@ struct VistaResumen: View {
     }
 
     private var tarjetaProgreso: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
                 ProgressView().controlSize(.small)
-                Text(almacen.mensaje).font(.headline)
+                Text(almacen.estado.mensaje).font(.headline)
                 Spacer()
                 Text("\(Formato.bytes(almacen.totalEncontrado)) encontrados")
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            ProgressView(value: almacen.progreso)
+            ProgressView(value: almacen.estado.fraccion)
+            if !almacen.estado.detalle.isEmpty {
+                Text(almacen.estado.detalle)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 8, alignment: .leading)], alignment: .leading, spacing: 6) {
+                ForEach(Array(Escaner.fases.enumerated()), id: \.offset) { i, fase in
+                    let hecho = i < almacen.estado.fase
+                    let actual = i == almacen.estado.fase
+                    Label {
+                        Text(fase).lineLimit(1)
+                    } icon: {
+                        Image(systemName: hecho ? "checkmark.circle.fill" : actual ? "circle.dotted" : "circle")
+                            .foregroundStyle(hecho ? Color.green : actual ? Color.accentColor : Color.secondary)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(actual ? .primary : .secondary)
+                }
+            }
         }
         .padding(18)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var tarjetaAvisos: some View {
+        let avisos = almacen.avisosImportantes
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "exclamationmark.shield.fill").foregroundStyle(.red)
+                Text("Cosas que no deberías borrar sin revisar").font(.headline)
+                Spacer()
+                Text("\(avisos.count)").font(.headline.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            Text("Encontré claves, código, archivos tuyos o cosas en uso dentro de elementos que se podrían borrar. No están marcados; te los enseño para que decidas con calma.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            VStack(spacing: 6) {
+                ForEach(avisos.prefix(5)) { el in
+                    let m = el.motivos.first { $0.nivel == .peligro } ?? el.motivos[0]
+                    Button {
+                        almacen.irA(el)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: m.icono).foregroundStyle(.red).frame(width: 20)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(el.nombre).font(.callout.weight(.medium)).lineLimit(1)
+                                Text(m.etiqueta + " · " + el.categoria.titulo).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(Formato.bytes(el.tamano)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 10)
+                        .background(.background, in: RoundedRectangle(cornerRadius: 8))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if avisos.count > 5 {
+                Text("Y \(avisos.count - 5) más: búscalos con la etiqueta roja «Cuidado».").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(18)
+        .background(Color.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 16))
     }
 
     /// Mientras analiza el orden es fijo (para que las tarjetas no salten); al terminar, de mayor a menor.
@@ -164,7 +269,9 @@ struct TarjetaCategoria: View {
     var body: some View {
         let total = almacen.total(de: categoria)
         let sel = almacen.totalSeleccionado(de: categoria)
-        let n = almacen.elementos(de: categoria).count
+        let lista = almacen.elementos(de: categoria)
+        let n = lista.count
+        let cuidado = lista.filter { $0.riesgo == .cuidado }.count
         Button {
             almacen.seccion = .categoria(categoria)
         } label: {
@@ -185,10 +292,17 @@ struct TarjetaCategoria: View {
                 .frame(height: 30)
                 Text(categoria.titulo).font(.headline)
                     .lineLimit(1)
-                Text(n == 0 ? (almacen.analizando ? "Analizando…" : "Nada que limpiar")
-                     : "\(n) \(n == 1 ? "elemento" : "elementos") · \(sel > 0 ? Formato.bytes(sel) + " seleccionados" : "nada seleccionado")")
-                    .font(.caption)
-                    .foregroundStyle(sel > 0 ? .green : .secondary)
+                HStack(spacing: 6) {
+                    Text(n == 0 ? (almacen.analizando ? "Analizando…" : "Nada que limpiar")
+                         : "\(n) \(n == 1 ? "elemento" : "elementos") · \(sel > 0 ? Formato.bytes(sel) + " seleccionados" : "nada seleccionado")")
+                        .foregroundStyle(sel > 0 ? .green : .secondary)
+                    if cuidado > 0 {
+                        Label("\(cuidado)", systemImage: "xmark.octagon.fill")
+                            .foregroundStyle(.red)
+                            .help("\(cuidado) con «Cuidado»")
+                    }
+                }
+                .font(.caption)
             }
             .padding(16)
             .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
@@ -212,7 +326,7 @@ struct BotonVaciarPapelera: View {
                     almacen.vaciarPapelera()
                 }
             } message: {
-                Text("Lo que está en la Papelera se borrará para siempre.")
+                Text("Lo que está en la Papelera se borrará para siempre y ya no podrás deshacer la última limpieza.")
             }
     }
 }
