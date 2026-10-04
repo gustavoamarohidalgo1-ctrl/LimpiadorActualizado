@@ -29,7 +29,9 @@ struct VistaResumen: View {
     private var encabezado: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("LimpiadorMac").font(.largeTitle.weight(.bold))
-            Text("MacBook Air (M2) · 16 GB · SSD de 256 GB · versión \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
+            Text([almacen.mac?.descripcion, "disco de \(Formato.bytes(almacen.disco.total))",
+                  "versión \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")"]
+                .compactMap { $0 }.joined(separator: " · "))
                 .foregroundStyle(.secondary)
         }
     }
@@ -113,6 +115,14 @@ struct VistaResumen: View {
                 Label("macOS va más lento cuando queda menos del 10–15 % libre.", systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .font(.callout)
+            }
+            if d.purgable >= 1_000_000_000 {
+                let instantaneas = almacen.mac?.instantaneas ?? 0
+                Label("De ese espacio libre, \(Formato.bytes(d.purgable)) son «purgables»: macOS los libera solo cuando hace falta"
+                      + (instantaneas > 0 ? " (incluye \(instantaneas) \(instantaneas == 1 ? "instantánea local" : "instantáneas locales") de Time Machine)." : "."),
+                      systemImage: "clock.arrow.2.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             if almacen.tamanoPapelera > 50_000_000 && almacen.ultimaLimpieza == nil {
                 HStack {

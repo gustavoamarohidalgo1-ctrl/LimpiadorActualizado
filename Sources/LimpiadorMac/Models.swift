@@ -136,6 +136,7 @@ enum Categoria: String, CaseIterable, Identifiable, Hashable {
     case emuladores
     case desarrollo
     case cachesApps
+    case temporales
     case restos
     case proyectos
     case herramientas
@@ -152,6 +153,7 @@ enum Categoria: String, CaseIterable, Identifiable, Hashable {
         case .emuladores: return "Emuladores"
         case .desarrollo: return "Cachés de desarrollo"
         case .cachesApps: return "Cachés de aplicaciones"
+        case .temporales: return "Temporales del sistema"
         case .restos: return "Restos de apps borradas"
         case .proyectos: return "Compilaciones"
         case .herramientas: return "Carpetas ocultas"
@@ -171,6 +173,8 @@ enum Categoria: String, CaseIterable, Identifiable, Hashable {
             return "Cachés de Gradle, npm, Xcode y otras herramientas, separadas por versión y según lo que usan tus proyectos."
         case .cachesApps:
             return "Archivos temporales de navegadores y apps, incluidas las cachés internas que guardan junto a sus datos."
+        case .temporales:
+            return "Temporales y cachés que macOS guarda para tu usuario fuera de tu carpeta (/var/folders). Solo lo que ningún programa tiene abierto."
         case .restos:
             return "Lo que dejaron las apps que ya no están instaladas, agrupado por app: datos, cachés, registros y agentes de inicio."
         case .proyectos:
@@ -195,6 +199,7 @@ enum Categoria: String, CaseIterable, Identifiable, Hashable {
         case .emuladores: return "iphone.gen3"
         case .desarrollo: return "hammer.fill"
         case .cachesApps: return "square.stack.3d.up.fill"
+        case .temporales: return "gearshape.2.fill"
         case .restos: return "puzzlepiece.extension.fill"
         case .proyectos: return "shippingbox.fill"
         case .herramientas: return "eye.slash.fill"
@@ -219,6 +224,20 @@ enum AccionLimpieza: Hashable {
     case eliminarRuntime(id: String)
     /// Vacía la Papelera del usuario.
     case vaciarPapelera
+
+    /// Solo borrar rutas pasa por la Papelera. Vaciar un simulador, eliminar un sistema iOS
+    /// o vaciar la Papelera no se puede deshacer, elijas el modo que elijas.
+    var sePuedeDeshacer: Bool { self == .borrar }
+
+    var descripcionIrreversible: String {
+        switch self {
+        case .borrar: return "se borra"
+        case .eliminarSimulador: return "se elimina el simulador"
+        case .vaciarSimulador: return "se borra el contenido del simulador"
+        case .eliminarRuntime: return "se elimina el sistema iOS"
+        case .vaciarPapelera: return "se vacía la Papelera"
+        }
+    }
 }
 
 struct Elemento: Identifiable, Hashable {
@@ -249,6 +268,8 @@ struct Elemento: Identifiable, Hashable {
     /// Disco montado que hay que expulsar antes de borrar (instaladores abiertos).
     var imagenMontada: String? = nil
     var contenido = Contenido()
+    /// Duplicados: la copia que se conserva. Si también se va a borrar (o ya no existe), esta no se toca.
+    var conservar: String? = nil
 
     var rutaPrincipal: URL { rutas[0] }
 
@@ -263,18 +284,71 @@ struct Elemento: Identifiable, Hashable {
 
 struct InfoDisco {
     var total: Int64
+    /// Libre contando lo «purgable» (lo que macOS borra solo cuando necesita espacio).
     var libre: Int64
+    /// Libre ahora mismo, sin contar lo purgable.
+    var libreInmediato: Int64 = 0
+    var nombre = "Macintosh HD"
 
     var usado: Int64 { total - libre }
     var fraccionUsada: Double { total > 0 ? Double(usado) / Double(total) : 0 }
+    /// Instantáneas locales de Time Machine, cachés de iCloud… macOS las libera solo.
+    var purgable: Int64 { max(0, libre - libreInmediato) }
 
     static func actual() -> InfoDisco {
         let url = URL(fileURLWithPath: "/")
-        let claves: Set<URLResourceKey> = [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey]
+        let claves: Set<URLResourceKey> = [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey,
+                                           .volumeAvailableCapacityKey, .volumeLocalizedNameKey]
         let v = try? url.resourceValues(forKeys: claves)
         let total = Int64(v?.volumeTotalCapacity ?? 0)
         let libre = v?.volumeAvailableCapacityForImportantUsage ?? 0
-        return InfoDisco(total: total, libre: libre)
+        var d = InfoDisco(total: total, libre: libre)
+        d.libreInmediato = Int64(v?.volumeAvailableCapacity ?? 0)
+        if let n = v?.volumeLocalizedName, !n.isEmpty { d.nombre = n }
+        return d
+    }
+}
+
+/// El Mac en el que se ejecuta la app (para el encabezado).
+struct InfoMac: Sendable {
+    var modelo = "Mac"
+    var chip = ""
+    var memoria: Int64 = Int64(ProcessInfo.processInfo.physicalMemory)
+    /// Instantáneas locales de Time Machine en el disco de arranque.
+    var instantaneas = 0
+
+    var descripcion: String {
+        var partes = [modelo]
+        if !chip.isEmpty { partes.append(chip) }
+        partes.append("\(memoria / 1_073_741_824) GB de memoria")
+        return partes.joined(separator: " · ")
+    }
+
+    /// Tarda alrededor de un segundo: se llama fuera del hilo principal.
+    static func actual() -> InfoMac {
+        var m = InfoMac()
+        if let modelo = sysctl("hw.model") { m.modelo = modelo }
+        if let chip = sysctl("machdep.cpu.brand_string") { m.chip = chip }
+        // El nombre comercial («MacBook Air») solo lo da system_profiler.
+        let json = Shell.ejecutar("/usr/sbin/system_profiler", ["SPHardwareDataType", "-json"], limite: 20).salida
+        if let d = json.data(using: .utf8),
+           let raiz = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+           let hw = (raiz["SPHardwareDataType"] as? [[String: Any]])?.first {
+            if let n = hw["machine_name"] as? String, !n.isEmpty { m.modelo = n }
+            if let c = hw["chip_type"] as? String, !c.isEmpty { m.chip = c }
+        }
+        let tm = Shell.ejecutar("/usr/bin/tmutil", ["listlocalsnapshots", "/"], limite: 15).salida
+        m.instantaneas = tm.split(separator: "\n").filter { $0.contains("com.apple.TimeMachine") }.count
+        return m
+    }
+
+    private static func sysctl(_ nombre: String) -> String? {
+        var tam = 0
+        guard sysctlbyname(nombre, nil, &tam, nil, 0) == 0, tam > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: tam)
+        guard sysctlbyname(nombre, &buffer, &tam, nil, 0) == 0 else { return nil }
+        let r = String(cString: buffer)
+        return r.isEmpty ? nil : r
     }
 }
 
@@ -292,6 +366,8 @@ struct ResultadoLimpieza: Identifiable {
     var forzadosAPapelera = 0
     /// Cuántas cosas se pueden devolver a su sitio con «Deshacer».
     var restaurables = 0
+    /// Elementos que se limpiaron por completo.
+    var hechos: Set<UUID> = []
 
     var liberadoReal: Int64 { max(0, libreDespues - libreAntes) }
 }
@@ -312,7 +388,7 @@ enum ModoLimpieza: String, CaseIterable, Identifiable {
     var descripcion: String {
         switch self {
         case .papelera:
-            return "Puedes deshacerlo con un clic. El espacio se libera cuando vacías la Papelera."
+            return "Puedes deshacerlo con un clic (salvo vaciar simuladores, sistemas iOS o la Papelera). El espacio se libera cuando vacías la Papelera."
         case .definitivo:
             return "El espacio se libera al instante. Por seguridad, lo marcado como Revisar o Cuidado va igual a la Papelera."
         }

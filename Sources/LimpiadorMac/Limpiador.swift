@@ -1,18 +1,25 @@
 import Foundation
 
 /// Borra lo que el usuario seleccionó. Antes de tocar cada elemento vuelve a comprobar que sea seguro:
-/// rutas protegidas, apps abiertas y emuladores encendidos.
+/// rutas protegidas, apps abiertas, emuladores encendidos y que quede al menos una copia de cada duplicado.
 enum Limpiador {
-    static func limpiar(_ elementos: [Elemento], modo: ModoLimpieza,
+    static func limpiar(_ seleccion: [Elemento], modo: ModoLimpieza,
                         progreso: @Sendable (Double, String) -> Void) -> ResultadoLimpieza {
         let fm = FileManager.default
         let libreAntes = InfoDisco.actual().libre
         let procesos = Procesos.capturar()
+        // Vaciar la Papelera va al final y solo borra lo que ya estaba en ella al empezar:
+        // lo que esta misma limpieza mande a la Papelera tiene que poder deshacerse.
+        let elementos = seleccion.filter { $0.accion != .vaciarPapelera } + seleccion.filter { $0.accion == .vaciarPapelera }
+        let papeleraAntes = seleccion.contains { $0.accion == .vaciarPapelera } ? contenidoPapelera() : []
+        // Todo lo que se va a borrar, para no borrar nunca la última copia de un duplicado.
+        let aBorrar = Set(seleccion.filter { $0.accion == .borrar }.flatMap { $0.rutas.map(\.path) })
+
         var errores: [String] = []
         var omitidos: [String] = []
         var movimientos: [Movimiento] = []
         var registro: [String] = []
-        var limpiados = 0
+        var hechos = Set<UUID>()
         var forzados = 0
         var bytes: Int64 = 0
 
@@ -26,9 +33,14 @@ enum Limpiador {
                 omitidos.append("\(el.nombre): \(quien) está en uso. Ciérralo y vuelve a limpiar.")
                 continue
             }
+            if let original = el.conservar,
+               !Rutas.existe(original) || aBorrar.contains(original) || Rutas.estaDentro(original, de: aBorrar) {
+                omitidos.append("\(el.nombre): es la última copia que queda (la de \(Formato.rutaCorta(Rutas.padre(original))) también se iba a borrar o ya no está).")
+                continue
+            }
             // Lo que no es 100 % seguro nunca se elimina sin pasar por la Papelera.
             let modoElemento: ModoLimpieza = (modo == .definitivo && el.riesgo != .seguro) ? .papelera : modo
-            if modoElemento != modo { forzados += 1 }
+            if el.accion == .borrar && modoElemento != modo { forzados += 1 }
 
             var ok = true
             switch el.accion {
@@ -37,7 +49,7 @@ enum Limpiador {
                     Shell.ejecutar("/usr/bin/hdiutil", ["detach", disco, "-quiet"], limite: 30)
                 }
                 for (j, url) in el.rutas.enumerated() {
-                    guard Rutas.existe(url) else { continue }
+                    guard Rutas.existeSinSeguir(url.path) else { continue }
                     guard Seguridad.sePuedeBorrar(url) else {
                         errores.append("\(Formato.rutaCorta(url)): ruta protegida, no se tocó.")
                         ok = false
@@ -62,8 +74,11 @@ enum Limpiador {
                     } catch {
                         // Algunas carpetas no se pueden mover enteras (permisos): se intenta con su contenido.
                         let parcial = vaciarContenido(de: url, modo: modoElemento)
-                        movimientos += parcial.movimientos.map {
-                            Movimiento(original: $0.0, enPapelera: $0.1, nombre: el.nombre, bytes: 0)
+                        for (original, destino) in parcial.hechos {
+                            if let destino {
+                                movimientos.append(Movimiento(original: original, enPapelera: destino, nombre: el.nombre, bytes: 0))
+                            }
+                            registro.append("\(modoElemento == .papelera ? "papelera" : "eliminado")\t0\t\(original)")
                         }
                         if !parcial.completo {
                             errores.append("\(Formato.rutaCorta(url)): \(error.localizedDescription)")
@@ -73,24 +88,24 @@ enum Limpiador {
                 }
             case .eliminarSimulador(let udid):
                 ok = Shell.ejecutar("/usr/bin/xcrun", ["simctl", "delete", udid], limite: 120).estado == 0
-                if !ok { errores.append("\(el.nombre): no se pudo eliminar el simulador.") }
-                registro.append("simulador eliminado\t\(el.tamano)\t\(udid)")
+                if ok { registro.append("simulador eliminado\t\(el.tamano)\t\(udid)") }
+                else { errores.append("\(el.nombre): no se pudo eliminar el simulador.") }
             case .vaciarSimulador(let udid):
                 Shell.ejecutar("/usr/bin/xcrun", ["simctl", "shutdown", udid], limite: 60)
                 ok = Shell.ejecutar("/usr/bin/xcrun", ["simctl", "erase", udid], limite: 120).estado == 0
-                if !ok { errores.append("\(el.nombre): no se pudo borrar (¿está abierto el simulador?).") }
-                registro.append("simulador vaciado\t\(el.tamano)\t\(udid)")
+                if ok { registro.append("simulador vaciado\t\(el.tamano)\t\(udid)") }
+                else { errores.append("\(el.nombre): no se pudo borrar (¿está abierto el simulador?).") }
             case .eliminarRuntime(let id):
                 ok = Shell.ejecutar("/usr/bin/xcrun", ["simctl", "runtime", "delete", id], limite: 300).estado == 0
-                if !ok { errores.append("\(el.nombre): Xcode no pudo eliminarlo. Prueba desde Xcode › Ajustes › Componentes.") }
-                registro.append("sistema iOS eliminado\t\(el.tamano)\t\(id)")
+                if ok { registro.append("sistema iOS eliminado\t\(el.tamano)\t\(id)") }
+                else { errores.append("\(el.nombre): Xcode no pudo eliminarlo. Prueba desde Xcode › Ajustes › Componentes.") }
             case .vaciarPapelera:
-                ok = vaciarPapelera()
-                if !ok { errores.append("No se pudo vaciar toda la Papelera. Dale Acceso total al disco a LimpiadorMac.") }
-                registro.append("papelera vaciada\t\(el.tamano)\t~/.Trash")
+                ok = vaciar(papeleraAntes)
+                if ok { registro.append("papelera vaciada\t\(el.tamano)\t~/.Trash") }
+                else { errores.append("No se pudo vaciar toda la Papelera. Dale Acceso total al disco a LimpiadorMac.") }
             }
             if ok {
-                limpiados += 1
+                hechos.insert(el.id)
                 bytes += el.tamano
             }
         }
@@ -98,42 +113,58 @@ enum Limpiador {
 
         Historial.registrar(registro)
         if !movimientos.isEmpty {
-            Historial.guardarUltima(LimpiezaGuardada(fecha: Date(), movimientos: movimientos))
+            Historial.guardar(LimpiezaGuardada(fecha: Date(), movimientos: movimientos))
         }
-        return ResultadoLimpieza(elementosLimpiados: limpiados, bytesLimpiados: bytes,
+        return ResultadoLimpieza(elementosLimpiados: hechos.count, bytesLimpiados: bytes,
                                  libreAntes: libreAntes, libreDespues: InfoDisco.actual().libre,
                                  errores: errores, modo: modo, omitidos: omitidos,
-                                 forzadosAPapelera: forzados, restaurables: movimientos.count)
+                                 forzadosAPapelera: forzados,
+                                 restaurables: movimientos.filter { Rutas.existeSinSeguir($0.enPapelera) }.count,
+                                 hechos: hechos)
     }
 
-    private static func vaciarContenido(de url: URL, modo: ModoLimpieza) -> (completo: Bool, movimientos: [(String, String)]) {
+    private static func vaciarContenido(de url: URL, modo: ModoLimpieza) -> (completo: Bool, hechos: [(String, String?)]) {
         guard Rutas.esCarpeta(url) else { return (false, []) }
         var completo = true
-        var movimientos: [(String, String)] = []
+        var hechos: [(String, String?)] = []
         for hijo in Rutas.hijos(url) {
+            // Las mismas reglas que para la carpeta entera: ni llaves de firma ni rutas protegidas.
+            guard Seguridad.sePuedeBorrar(hijo) else { completo = false; continue }
             do {
                 if modo == .papelera {
                     var destino: NSURL?
                     try FileManager.default.trashItem(at: hijo, resultingItemURL: &destino)
-                    if let d = destino?.path { movimientos.append((hijo.path, d)) }
+                    hechos.append((hijo.path, destino?.path))
                 } else {
                     try FileManager.default.removeItem(at: hijo)
+                    hechos.append((hijo.path, nil))
                 }
             } catch { completo = false }
         }
-        return (completo, movimientos)
+        return (completo, hechos)
     }
 
+    static func contenidoPapelera() -> [URL] {
+        (try? FileManager.default.contentsOfDirectory(at: Rutas.enHome(".Trash"), includingPropertiesForKeys: nil)) ?? []
+    }
+
+    /// Vacía toda la Papelera (el botón «Vaciar Papelera»).
     static func vaciarPapelera() -> Bool {
-        let trash = Rutas.enHome(".Trash")
-        guard let hijos = try? FileManager.default.contentsOfDirectory(at: trash, includingPropertiesForKeys: nil) else {
+        guard let hijos = try? FileManager.default.contentsOfDirectory(at: Rutas.enHome(".Trash"),
+                                                                        includingPropertiesForKeys: nil) else {
             return false
         }
+        return vaciar(hijos)
+    }
+
+    private static func vaciar(_ items: [URL]) -> Bool {
         var todo = true
-        for h in hijos {
-            do { try FileManager.default.removeItem(at: h) } catch { todo = false }
+        for h in items {
+            do { try FileManager.default.removeItem(at: h) } catch {
+                if Rutas.existeSinSeguir(h.path) { todo = false }
+            }
         }
-        Historial.olvidarUltima()   // lo que había para deshacer ya no existe
+        Historial.depurar()   // lo que había para deshacer de esas cosas ya no existe
         return todo
     }
 
@@ -151,57 +182,88 @@ struct Movimiento: Codable, Hashable {
     let bytes: Int64
 }
 
-struct LimpiezaGuardada: Codable {
+struct LimpiezaGuardada: Codable, Identifiable {
+    var id: UUID
     let fecha: Date
     var movimientos: [Movimiento]
+
+    init(fecha: Date, movimientos: [Movimiento]) {
+        id = UUID()
+        self.fecha = fecha
+        self.movimientos = movimientos
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, fecha, movimientos }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // Las limpiezas guardadas por la versión anterior no tenían identificador.
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        fecha = try c.decode(Date.self, forKey: .fecha)
+        movimientos = try c.decode([Movimiento].self, forKey: .movimientos)
+    }
 
     var bytes: Int64 { movimientos.reduce(0) { $0 + $1.bytes } }
     var elementos: Int { Set(movimientos.map(\.nombre)).count }
 }
 
-/// Guarda la última limpieza (para poder deshacerla) y un registro de todo lo que se borró.
+/// Guarda las últimas limpiezas (para poder deshacerlas, de la más reciente a la más antigua)
+/// y un registro de todo lo que se borró.
 enum Historial {
     private static let carpeta = Rutas.enHome("Library/Application Support/LimpiadorMac")
-    private static let ultima = carpeta.appendingPathComponent("ultima-limpieza.json")
+    private static let archivo = carpeta.appendingPathComponent("limpiezas.json")
+    /// Formato de la versión anterior: solo la última limpieza.
+    private static let anterior = carpeta.appendingPathComponent("ultima-limpieza.json")
     static let registroURL = Rutas.enHome("Library/Logs/LimpiadorMac/historial.log")
+    private static let maximo = 30
+    private static let candado = NSLock()
 
-    static func guardarUltima(_ l: LimpiezaGuardada) {
-        try? FileManager.default.createDirectory(at: carpeta, withIntermediateDirectories: true)
-        let codificador = JSONEncoder()
-        codificador.dateEncodingStrategy = .iso8601
-        try? codificador.encode(l).write(to: ultima)
+    /// Las limpiezas que todavía tienen algo en la Papelera, de la más antigua a la más reciente.
+    static func todas() -> [LimpiezaGuardada] {
+        candado.lock(); defer { candado.unlock() }
+        return leer().compactMap(vigente)
     }
 
-    /// La última limpieza, si todavía queda algo en la Papelera para devolver.
-    static func cargarUltima() -> LimpiezaGuardada? {
-        let decodificador = JSONDecoder()
-        decodificador.dateDecodingStrategy = .iso8601
-        guard let datos = try? Data(contentsOf: ultima),
-              var l = try? decodificador.decode(LimpiezaGuardada.self, from: datos) else { return nil }
-        l.movimientos = l.movimientos.filter { Rutas.existe($0.enPapelera) }
-        return l.movimientos.isEmpty ? nil : l
+    /// La limpieza más reciente que todavía se puede deshacer.
+    static func cargarUltima() -> LimpiezaGuardada? { todas().last }
+
+    /// Agrega una limpieza sin tocar las anteriores (borrar algo desde el Explorador no impide deshacer una limpieza grande).
+    static func guardar(_ l: LimpiezaGuardada) {
+        guard !l.movimientos.isEmpty else { return }
+        candado.lock(); defer { candado.unlock() }
+        var lista = leer().compactMap(vigente)
+        lista.append(l)
+        escribir(Array(lista.suffix(maximo)))
     }
 
-    static func olvidarUltima() {
-        try? FileManager.default.removeItem(at: ultima)
+    /// Olvida lo que ya no está en la Papelera (por ejemplo, después de vaciarla).
+    static func depurar() {
+        candado.lock(); defer { candado.unlock() }
+        escribir(leer().compactMap(vigente))
     }
 
-    /// Devuelve cada cosa a su sitio original.
+    /// Devuelve cada cosa a su sitio original. Lo que no se pudo devolver queda guardado para intentarlo otra vez.
     static func deshacer(_ l: LimpiezaGuardada) -> (restaurados: Int, bytes: Int64, errores: [String]) {
         let fm = FileManager.default
         var restaurados = 0
         var bytes: Int64 = 0
         var errores: [String] = []
         var lineas: [String] = []
-        for m in l.movimientos {
+        var pendientes: [Movimiento] = []
+        // Primero las carpetas de arriba, para que lo que iba dentro encuentre su sitio.
+        let orden = l.movimientos.sorted {
+            $0.original.split(separator: "/").count < $1.original.split(separator: "/").count
+        }
+        for m in orden {
             let origen = URL(fileURLWithPath: m.enPapelera)
             let destino = URL(fileURLWithPath: m.original)
-            guard fm.fileExists(atPath: origen.path) else {
+            guard Rutas.existeSinSeguir(origen.path) else {
                 errores.append("\(Formato.rutaCorta(destino)): ya no está en la Papelera.")
                 continue
             }
-            guard !fm.fileExists(atPath: destino.path) else {
-                errores.append("\(Formato.rutaCorta(destino)): ya existe algo con ese nombre; está en la Papelera.")
+            guard !Rutas.existeSinSeguir(destino.path) else {
+                errores.append("\(Formato.rutaCorta(destino)): ya existe algo con ese nombre; sigue en la Papelera.")
+                pendientes.append(m)
                 continue
             }
             do {
@@ -212,10 +274,18 @@ enum Historial {
                 lineas.append("restaurado\t\(m.bytes)\t\(m.original)")
             } catch {
                 errores.append("\(Formato.rutaCorta(destino)): \(error.localizedDescription)")
+                pendientes.append(m)
             }
         }
         registrar(lineas)
-        olvidarUltima()
+
+        candado.lock()
+        var lista = leer()
+        if let i = lista.firstIndex(where: { $0.id == l.id }) {
+            if pendientes.isEmpty { lista.remove(at: i) } else { lista[i].movimientos = pendientes }
+        }
+        escribir(lista.compactMap(vigente))
+        candado.unlock()
         return (restaurados, bytes, errores)
     }
 
@@ -232,5 +302,33 @@ enum Historial {
         } else {
             try? Data(texto.utf8).write(to: registroURL)
         }
+    }
+
+    private static func vigente(_ l: LimpiezaGuardada) -> LimpiezaGuardada? {
+        var l = l
+        l.movimientos = l.movimientos.filter { Rutas.existeSinSeguir($0.enPapelera) }
+        return l.movimientos.isEmpty ? nil : l
+    }
+
+    private static func leer() -> [LimpiezaGuardada] {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        if let datos = try? Data(contentsOf: archivo), let lista = try? d.decode([LimpiezaGuardada].self, from: datos) {
+            return lista
+        }
+        // Lo que guardó la versión anterior (una sola limpieza).
+        if let datos = try? Data(contentsOf: anterior), let l = try? d.decode(LimpiezaGuardada.self, from: datos) {
+            return [l]
+        }
+        return []
+    }
+
+    private static func escribir(_ lista: [LimpiezaGuardada]) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: carpeta, withIntermediateDirectories: true)
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .iso8601
+        if let datos = try? e.encode(lista) { try? datos.write(to: archivo, options: .atomic) }
+        try? fm.removeItem(at: anterior)
     }
 }

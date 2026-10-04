@@ -19,7 +19,7 @@ final class Memoria: @unchecked Sendable {
 /// y decide su riesgo final. Nunca baja un riesgo: solo lo sube y explica por qué.
 enum Evaluador {
     /// Categorías donde encontrar archivos personales es mala señal.
-    private static let revisarContenido: Set<Categoria> = [.restos, .herramientas, .cachesApps, .registros]
+    private static let revisarContenido: Set<Categoria> = [.restos, .herramientas, .cachesApps, .registros, .temporales]
     private static let palabrasRespaldo = ["respaldo", "backup", "copia de seguridad", "copias de seguridad", "evidencia", "evidence"]
     private static let revisarCodigo: Set<Categoria> = [.restos, .herramientas, .cachesApps, .registros, .grandes]
 
@@ -32,9 +32,10 @@ enum Evaluador {
 
         // 1. Llaves de firma, certificados y contraseñas.
         let sensibles = c.indice.sensibles(dentro: rutas)
-        // En Library, una clave es la sesión o las credenciales de la propia app; fuera, son tuyas.
-        let deApps = sensibles.filter { $0.zona == .library && $0.tipo != .firebase }
-        let tuyas = sensibles.filter { $0.zona != .library }
+        // En Library (o en las carpetas de sistema), una clave es la sesión o las credenciales de la propia app;
+        // fuera, son tuyas.
+        let deApps = sensibles.filter { ($0.zona == .library || $0.zona == .sistema) && $0.tipo != .firebase }
+        let tuyas = sensibles.filter { $0.zona != .library && $0.zona != .sistema }
         let keystores = tuyas.filter { $0.tipo == .keystore }
         let secretos = tuyas.filter { $0.tipo == .certificado || $0.tipo == .llaveSSH || $0.tipo == .secreto }
         let firebase = sensibles.filter { $0.tipo == .firebase }

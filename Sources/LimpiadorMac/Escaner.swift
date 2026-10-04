@@ -14,8 +14,8 @@ struct Escaner {
     typealias Entrega = @Sendable ([Elemento]) -> Void
 
     /// Orden de análisis. «Archivos grandes» va al final para no repetir lo que ya ofrecieron otras categorías.
-    static let orden: [Categoria] = [.emuladores, .desarrollo, .cachesApps, .restos, .proyectos, .herramientas,
-                                     .instaladores, .registros, .papelera, .duplicados, .grandes]
+    static let orden: [Categoria] = [.emuladores, .desarrollo, .cachesApps, .temporales, .restos, .proyectos,
+                                     .herramientas, .instaladores, .registros, .papelera, .duplicados, .grandes]
     static let fases: [String] = ["Apps abiertas", "Índice del disco", "Apps instaladas"] + orden.map(\.titulo)
 
     private let minimo: Int64 = 1_000_000
@@ -69,6 +69,7 @@ struct Escaner {
         case .emuladores: elementos = emuladores(c)
         case .desarrollo: elementos = desarrollo(c)
         case .cachesApps: elementos = cachesApps(c)
+        case .temporales: elementos = temporales(c)
         case .restos: elementos = restos(c)
         case .proyectos: elementos = proyectos(c)
         case .herramientas: elementos = herramientas(c)
@@ -190,20 +191,64 @@ struct Escaner {
             }
         }
 
-        // Versiones antiguas del SDK (se conserva la más nueva).
-        for (carpeta, nombre, detalle) in [("build-tools", "Android build-tools", "Herramientas de compilación de Android."),
-                                           ("ndk", "Android NDK", "Kit para compilar código nativo (C/C++).")] {
-            let versiones = Rutas.hijos(sdk.appendingPathComponent(carpeta)).filter { Rutas.esCarpeta($0) }
+        // Lo que usan de verdad tus proyectos, según sus archivos de Gradle.
+        let usoSDK = UsoSDK.leer(c.indice.archivosGradle)
+        let androidStudio = EnUso.app(nombre: "Android Studio", claves: ["com.google.android.studio"])
+
+        // Plataformas (android-XX) con las que no compila ningún proyecto. La más nueva se conserva.
+        let plataformas = Rutas.hijos(sdk.appendingPathComponent("platforms")).filter { Rutas.esCarpeta($0) }
+            .compactMap { p in UsoSDK.numeroPlataforma(p.lastPathComponent).map { (url: p, api: $0) } }
+        let apiMasNueva = plataformas.map(\.api).max()
+        for p in plataformas where p.api != apiMasNueva && !usoSDK.plataformas.contains(p.api) {
+            let seguro = usoSDK.archivos > 0 && !usoSDK.plataformaIncierta
+            r.append(Elemento(
+                nombre: "Plataforma Android \(p.api) (sin usar)",
+                detalle: "Lo necesario para compilar apps con la API \(p.api) de Android.",
+                consecuencia: "Si un proyecto vuelve a compilar con la API \(p.api), Android Studio la descarga otra vez.",
+                rutas: [p.url], categoria: .emuladores, riesgo: seguro ? .seguro : .revisar, seleccionado: seguro,
+                motivos: [seguro
+                    ? .bien("checkmark.circle.fill", "Ningún proyecto la usa",
+                            "Revisé \(usoSDK.archivos) archivos de Gradle de tus proyectos: ninguno compila con la API \(p.api).")
+                    : .info("questionmark.circle", "No lo sé con certeza",
+                            usoSDK.archivos == 0 ? "No encontré proyectos de Android para comprobar qué API usan."
+                                              : "Algún proyecto elige la API con una variable (Flutter, React Native…) y no puedo saber cuál.")],
+                enUso: androidStudio, dueno: "Android Studio"))
+        }
+
+        // Versiones antiguas de build-tools y NDK: se conserva la más nueva y las que pide algún proyecto.
+        let herramientasSDK: [(carpeta: String, nombre: String, detalle: String, usadas: Set<String>, incierto: Bool)] = [
+            ("build-tools", "Android build-tools", "Herramientas de compilación de Android.", usoSDK.buildTools, false),
+            ("ndk", "Android NDK", "Kit para compilar código nativo (C/C++).", usoSDK.ndk, usoSDK.ndkIncierto),
+        ]
+        for h in herramientasSDK {
+            let versiones = Rutas.hijos(sdk.appendingPathComponent(h.carpeta)).filter { Rutas.esCarpeta($0) }
                 .sorted { $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedAscending }
-            for v in versiones.dropLast() {
+            guard let masNueva = versiones.last?.lastPathComponent else { continue }
+            for v in versiones.dropLast() where !h.usadas.contains(v.lastPathComponent) {
                 r.append(Elemento(
-                    nombre: "\(nombre) \(v.lastPathComponent) (versión antigua)",
-                    detalle: detalle,
+                    nombre: "\(h.nombre) \(v.lastPathComponent) (versión antigua)",
+                    detalle: h.detalle,
                     consecuencia: "Si algún proyecto pide esta versión exacta, Gradle la vuelve a descargar.",
-                    rutas: [v], categoria: .emuladores, riesgo: .seguro, seleccionado: true,
-                    motivos: [.bien("clock.arrow.circlepath", "Hay una más nueva", "Ya tienes la versión \(versiones.last!.lastPathComponent).")],
-                    dueno: "Android Studio"))
+                    rutas: [v], categoria: .emuladores, riesgo: h.incierto ? .revisar : .seguro, seleccionado: !h.incierto,
+                    motivos: [h.incierto
+                        ? .info("questionmark.circle", "No lo sé con certeza",
+                                "Algún proyecto elige la versión del NDK con una variable y no puedo saber cuál usa.")
+                        : .bien("clock.arrow.circlepath", "Ningún proyecto la pide",
+                                "Ya tienes la versión \(masNueva) y ninguno de tus proyectos pide esta.")],
+                    enUso: androidStudio, dueno: "Android Studio"))
             }
+        }
+
+        // Descargas que se quedaron a medias.
+        let aMedias = [".temp", ".downloadIntermediates"].map { sdk.appendingPathComponent($0) }.filter { Rutas.existe($0) }
+        if !aMedias.isEmpty {
+            r.append(Elemento(
+                nombre: "Descargas a medias del SDK de Android",
+                detalle: "Restos de descargas e instalaciones del SDK Manager que no terminaron.",
+                consecuencia: "Nada: el SDK Manager crea estas carpetas de nuevo cuando las necesita.",
+                rutas: aMedias, categoria: .emuladores, riesgo: .seguro, seleccionado: true,
+                motivos: [.bien("arrow.down.circle.dotted", "Temporales", "Solo son restos de descargas.")],
+                enUso: androidStudio, dueno: "Android Studio"))
         }
         for fuente in Rutas.hijos(sdk.appendingPathComponent("sources")) where Rutas.esCarpeta(fuente) {
             r.append(Elemento(
@@ -223,11 +268,13 @@ struct Escaner {
         var r: [Elemento] = []
         let iso = ISO8601DateFormatter()
         var runtimesUsados = Set<String>()
+        var listaCompleta = false
 
-        let json = Shell.ejecutar("/usr/bin/xcrun", ["simctl", "list", "devices", "-j"], limite: 30).salida
+        let json = Shell.ejecutar("/usr/bin/xcrun", ["simctl", "list", "devices", "-j"], limite: 60).salida
         if let datos = json.data(using: .utf8),
            let raiz = try? JSONSerialization.jsonObject(with: datos) as? [String: Any],
            let porRuntime = raiz["devices"] as? [String: [[String: Any]]] {
+            listaCompleta = true
             for (runtime, dispositivos) in porRuntime {
                 if dispositivos.contains(where: { ($0["isAvailable"] as? Bool) ?? true }) { runtimesUsados.insert(runtime) }
                 let version = runtime.components(separatedBy: "SimRuntime.").last?.replacingOccurrences(of: "-", with: " ") ?? runtime
@@ -235,7 +282,7 @@ struct Escaner {
                     guard let udid = d["udid"] as? String, let nombre = d["name"] as? String,
                           let dataPath = d["dataPath"] as? String else { continue }
                     let disponible = d["isAvailable"] as? Bool ?? true
-                    let ultimo = (d["lastUsedAt"] as? String).flatMap { iso.date(from: $0) }
+                    let ultimo = ((d["lastBootedAt"] as? String) ?? (d["lastUsedAt"] as? String)).flatMap { iso.date(from: $0) }
                     if disponible {
                         r.append(Elemento(
                             nombre: "Simulador iOS: \(nombre) (\(version))",
@@ -260,8 +307,10 @@ struct Escaner {
             }
         }
 
-        // Sistemas iOS descargados que ya no usa ningún simulador.
-        let runtimes = Shell.ejecutar("/usr/bin/xcrun", ["simctl", "runtime", "list", "-j"], limite: 30).salida
+        // Sistemas iOS descargados que ya no usa ningún simulador. Si no se pudo leer la lista de simuladores,
+        // no se sabe cuáles se usan: no se ofrece ninguno.
+        guard listaCompleta else { return r }
+        let runtimes = Shell.ejecutar("/usr/bin/xcrun", ["simctl", "runtime", "list", "-j"], limite: 60).salida
         if let datos = runtimes.data(using: .utf8),
            let lista = try? JSONSerialization.jsonObject(with: datos) as? [String: [String: Any]] {
             for (id, info) in lista {
@@ -376,6 +425,50 @@ struct Escaner {
                  consecuencia: "Tendrás que volver a iniciar sesión en Expo.", riesgo: .revisar, preseleccion: false, dueno: "Expo"),
         CacheDev(rel: ".android/cache", nombre: "Caché de Android", detalle: "Caché de las herramientas de Android.",
                  consecuencia: "Se regenera sola.", dueno: "Android Studio"),
+        CacheDev(rel: ".android/build-cache", nombre: "Caché de compilación antigua de Android",
+                 detalle: "Caché que usaban las versiones antiguas del plugin de Android para Gradle.",
+                 consecuencia: "Nada: las versiones actuales ya no la usan.", uso: .gradle, dueno: "Android Studio"),
+        CacheDev(rel: ".npm/_logs", nombre: "Registros de npm", detalle: "Registros de errores de npm.",
+                 consecuencia: "Nada: solo son registros.", dueno: "npm"),
+        CacheDev(rel: ".nvm/.cache", nombre: "Descargas de nvm", detalle: "Instaladores de Node que nvm descargó.",
+                 consecuencia: "Nada: las versiones de Node ya están instaladas.", dueno: "nvm"),
+        CacheDev(rel: "Library/Caches/deno", nombre: "Caché de Deno", detalle: "Módulos y compilaciones que guardó Deno.",
+                 consecuencia: "Deno los vuelve a descargar si hacen falta.", dueno: "Deno"),
+        CacheDev(rel: "Library/Caches/typescript", nombre: "Caché de TypeScript", detalle: "Tipos que descarga el editor para TypeScript.",
+                 consecuencia: "El editor los vuelve a descargar.", dueno: "TypeScript"),
+        CacheDev(rel: "Library/Caches/Cypress", nombre: "Caché de Cypress", detalle: "Versiones de Cypress descargadas.",
+                 consecuencia: "Se vuelven a descargar al instalar un proyecto con Cypress.", dueno: "Cypress"),
+        CacheDev(rel: ".cache/selenium", nombre: "Navegadores de Selenium", detalle: "Navegadores y drivers que descargó Selenium.",
+                 consecuencia: "Selenium los vuelve a descargar.", dueno: "Selenium"),
+        CacheDev(rel: "Library/Caches/org.carthage.CarthageKit", nombre: "Caché de Carthage", detalle: "Dependencias descargadas por Carthage.",
+                 consecuencia: "Carthage las vuelve a descargar.", dueno: "Carthage"),
+        CacheDev(rel: ".dartServer", nombre: "Caché del analizador de Dart",
+                 detalle: "Índices que el editor genera para analizar código de Dart y Flutter.",
+                 consecuencia: "El editor los regenera al abrir un proyecto (los primeros minutos irá más lento).",
+                 uso: .proceso(nombre: "El analizador de Dart", patron: "analysis_server"), dueno: "Flutter"),
+        CacheDev(rel: ".skiko", nombre: "Librerías de Skiko", detalle: "Librerías nativas que extrae Compose Multiplatform.",
+                 consecuencia: "Se vuelven a extraer al ejecutar la app.", dueno: "Kotlin"),
+        CacheDev(rel: ".gradle/native", nombre: "Librerías nativas de Gradle", detalle: "Librerías que Gradle extrae para funcionar.",
+                 consecuencia: "Gradle las vuelve a extraer.", uso: .gradle, dueno: "Gradle"),
+        CacheDev(rel: ".gradle/kotlin-profile", nombre: "Perfiles de Kotlin", detalle: "Informes de rendimiento de compilaciones de Kotlin.",
+                 consecuencia: "Nada: son informes.", dueno: "Gradle"),
+        CacheDev(rel: ".gradle/jdks", nombre: "JDK descargados por Gradle", detalle: "Versiones de Java que Gradle descargó para compilar.",
+                 consecuencia: "Si un proyecto vuelve a pedir esa versión, Gradle la descarga otra vez.", riesgo: .revisar,
+                 preseleccion: false, uso: .gradle, dueno: "Gradle"),
+        CacheDev(rel: "Library/Caches/com.apple.dt.Xcode", nombre: "Caché de Xcode", detalle: "Archivos temporales de Xcode.",
+                 consecuencia: "Xcode la regenera.", uso: xcodeUso, dueno: "Xcode"),
+        CacheDev(rel: "Library/Developer/Xcode/DocumentationCache", nombre: "Caché de documentación de Xcode",
+                 detalle: "Documentación descargada para verla dentro de Xcode.",
+                 consecuencia: "Xcode la vuelve a descargar cuando abres la documentación.", uso: xcodeUso, dueno: "Xcode"),
+        CacheDev(rel: "Library/Developer/XCPGDevices", nombre: "Simuladores de Playgrounds",
+                 detalle: "Simuladores que Xcode crea para ejecutar Playgrounds.",
+                 consecuencia: "Xcode los vuelve a crear al ejecutar un Playground.", uso: xcodeUso, dueno: "Xcode"),
+        CacheDev(rel: "Library/Developer/Xcode/UserData/IB Support", nombre: "Caché de Interface Builder",
+                 detalle: "Simuladores internos que usa Interface Builder para dibujar storyboards.",
+                 consecuencia: "Xcode los vuelve a crear.", uso: xcodeUso, dueno: "Xcode"),
+        CacheDev(rel: "Library/Developer/Xcode/iOS Device Logs", nombre: "Registros de dispositivos iOS",
+                 detalle: "Registros que Xcode copió de iPhones y iPads conectados.",
+                 consecuencia: "Nada: solo son registros.", dueno: "Xcode"),
     ]
 
     private func desarrollo(_ c: Contexto) -> [Elemento] {
@@ -395,6 +488,9 @@ struct Escaner {
         r += xcode()
         r += navegadoresDePrueba()
         r += versionesAnterioresDeIDEs()
+        r += editores(c)
+        r += homebrew()
+        r += conda()
 
         let hf = Rutas.enHome(".cache/huggingface")
         if Rutas.existe(hf) {
@@ -614,6 +710,189 @@ struct Escaner {
         return r
     }
 
+    // MARK: VS Code y derivados
+
+    /// (carpeta en Application Support, carpeta oculta, nombre, identificador de la app)
+    private static let editoresVSCode: [(soporte: String, oculta: String, nombre: String, id: String)] = [
+        ("Code", ".vscode", "Visual Studio Code", "com.microsoft.VSCode"),
+        ("Code - Insiders", ".vscode-insiders", "VS Code Insiders", "com.microsoft.VSCodeInsiders"),
+        ("Cursor", ".cursor", "Cursor", "com.todesktop.230313mzl4w4u92"),
+        ("Windsurf", ".windsurf", "Windsurf", "com.exafunction.windsurf"),
+        ("VSCodium", ".vscode-oss", "VSCodium", "com.vscodium"),
+    ]
+
+    /// VS Code y sus derivados: extensiones que ya no están instaladas, cachés de versiones anteriores
+    /// y datos de proyectos que ya no existen.
+    private func editores(_ c: Contexto) -> [Elemento] {
+        var r: [Elemento] = []
+        for ed in Self.editoresVSCode {
+            let uso = EnUso.app(nombre: ed.nombre, claves: [ed.id, ed.nombre])
+
+            // 1. Extensiones: extensions.json dice exactamente cuáles están instaladas.
+            let carpetaExt = Rutas.enHome(ed.oculta + "/extensions")
+            if let instaladas = Self.extensionesInstaladas(en: carpetaExt) {
+                let viejas = Rutas.hijos(carpetaExt).filter {
+                    Rutas.esCarpeta($0) && !$0.lastPathComponent.hasPrefix(".") && !instaladas.contains($0.lastPathComponent)
+                }
+                if !viejas.isEmpty {
+                    r.append(Elemento(
+                        nombre: "Extensiones viejas de \(ed.nombre)",
+                        detalle: "Versiones anteriores o desinstaladas: \(Formato.listaCorta(viejas.map(\.lastPathComponent).sorted(), maximo: 4)).",
+                        consecuencia: "Nada: \(ed.nombre) ya usa otras versiones de esas extensiones o ya no las tiene instaladas.",
+                        rutas: viejas, categoria: .desarrollo, riesgo: .seguro, seleccionado: true,
+                        motivos: [.bien("puzzlepiece.extension.fill", "No instaladas",
+                                        "Según la lista de extensiones de \(ed.nombre) (extensions.json), estas carpetas ya no se usan.")],
+                        enUso: uso, dueno: ed.nombre))
+                }
+            }
+
+            let soporte = Rutas.enHome("Library/Application Support/\(ed.soporte)")
+            guard Rutas.esCarpeta(soporte) else { continue }
+
+            // 2. Código precompilado de versiones anteriores del editor: se conserva la que se usó por última vez.
+            let versiones = Rutas.hijos(soporte.appendingPathComponent("CachedData"))
+                .filter { Rutas.esCarpeta($0) && Self.esHashDeVersion($0.lastPathComponent) }
+                .sorted { (c.indice.masReciente(de: [$0]) ?? .distantPast) < (c.indice.masReciente(de: [$1]) ?? .distantPast) }
+            if versiones.count > 1 {
+                let viejas = Array(versiones.dropLast())
+                r.append(Elemento(
+                    nombre: "Caché de versiones anteriores de \(ed.nombre)",
+                    detalle: "Código precompilado de \(viejas.count) \(viejas.count == 1 ? "versión anterior" : "versiones anteriores") del editor.",
+                    consecuencia: "Nada: la versión actual usa su propia caché.",
+                    rutas: viejas, categoria: .desarrollo, riesgo: .seguro, seleccionado: true,
+                    motivos: [.bien("clock.arrow.circlepath", "Versiones anteriores", "\(ed.nombre) se actualizó y ya no usa estas carpetas.")],
+                    enUso: uso, dueno: ed.nombre))
+            }
+
+            // 3. Paquetes (.vsix) de extensiones que ya están instaladas.
+            let vsix = soporte.appendingPathComponent("CachedExtensionVSIXs")
+            if Rutas.esCarpeta(vsix) {
+                r.append(Elemento(
+                    nombre: "Instaladores de extensiones de \(ed.nombre)",
+                    detalle: "Copias de los paquetes (.vsix) de extensiones que ya instalaste.",
+                    consecuencia: "Nada: las extensiones ya están instaladas; si hace falta, se vuelven a descargar.",
+                    rutas: [vsix], categoria: .desarrollo, riesgo: .seguro, seleccionado: true,
+                    motivos: [.bien("shippingbox.fill", "Ya instaladas", "Son copias de algo que ya está instalado.")],
+                    enUso: uso, dueno: ed.nombre))
+            }
+
+            // 4. Estado guardado de proyectos cuya carpeta ya no existe.
+            var huerfanos: [URL] = []
+            var proyectos: [String] = []
+            for w in Rutas.hijos(soporte.appendingPathComponent("User/workspaceStorage")) where Rutas.esCarpeta(w) {
+                guard let ruta = Self.proyectoDeEspacio(w), !ruta.hasPrefix("/Volumes/"), !Rutas.existe(ruta) else { continue }
+                huerfanos.append(w)
+                proyectos.append(ruta)
+            }
+            if !huerfanos.isEmpty {
+                r.append(Elemento(
+                    nombre: "Datos de proyectos que ya no existen (\(ed.nombre))",
+                    detalle: "Estado guardado de \(huerfanos.count) \(huerfanos.count == 1 ? "proyecto" : "proyectos") cuya carpeta ya no está: \(Formato.listaCorta(proyectos.map { Formato.rutaCorta($0) }, maximo: 3)).",
+                    consecuencia: "Si alguno solo cambió de sitio, al abrirlo empezará sin sus pestañas ni el estado de sus extensiones (por ejemplo, el historial de chat).",
+                    rutas: huerfanos, categoria: .desarrollo, riesgo: .revisar,
+                    motivos: [.info("folder.badge.questionmark", "Proyectos borrados o movidos",
+                                    "La carpeta de cada uno de esos proyectos ya no existe en este Mac.")],
+                    enUso: uso, dueno: ed.nombre))
+            }
+        }
+        return r
+    }
+
+    /// Las carpetas de extensiones instaladas, o `nil` si no se pudo saber (entonces no se ofrece nada).
+    static func extensionesInstaladas(en carpeta: URL) -> Set<String>? {
+        guard let datos = try? Data(contentsOf: carpeta.appendingPathComponent("extensions.json")),
+              let lista = try? JSONSerialization.jsonObject(with: datos) as? [[String: Any]] else { return nil }
+        var r = Set<String>()
+        for e in lista {
+            if let rel = e["relativeLocation"] as? String, !rel.isEmpty {
+                r.insert(rel)
+            } else if let ubicacion = e["location"] as? [String: Any],
+                      let ruta = (ubicacion["path"] as? String) ?? (ubicacion["fsPath"] as? String) {
+                r.insert((ruta as NSString).lastPathComponent)
+            }
+        }
+        // Si hay extensiones en la lista pero no pude leer ninguna ubicación, el formato cambió: mejor no tocar nada.
+        if !lista.isEmpty && r.isEmpty { return nil }
+        // Las que el propio editor ya marcó como obsoletas (pendientes de borrar).
+        if let datos = try? Data(contentsOf: carpeta.appendingPathComponent(".obsolete")),
+           let obsoletas = try? JSONSerialization.jsonObject(with: datos) as? [String: Any] {
+            r.subtract(obsoletas.keys)
+        }
+        return r
+    }
+
+    /// La carpeta del proyecto al que pertenece un workspaceStorage, si es local; `nil` si es remoto o no se sabe.
+    static func proyectoDeEspacio(_ carpeta: URL) -> String? {
+        guard let datos = try? Data(contentsOf: carpeta.appendingPathComponent("workspace.json")),
+              let d = try? JSONSerialization.jsonObject(with: datos) as? [String: Any],
+              let uri = (d["folder"] as? String) ?? (d["workspace"] as? String),
+              let url = URL(string: uri), url.isFileURL, !url.path.isEmpty else { return nil }
+        return url.path
+    }
+
+    /// Las cachés de VS Code se llaman como el commit de cada versión («a1b2c3d4…»).
+    private static func esHashDeVersion(_ nombre: String) -> Bool {
+        nombre.count >= 7 && nombre.allSatisfy { $0.isHexDigit }
+    }
+
+    // MARK: Homebrew y conda
+
+    /// Versiones antiguas de fórmulas de Homebrew: lo mismo que borra «brew cleanup».
+    private func homebrew() -> [Elemento] {
+        var r: [Elemento] = []
+        for prefijo in ["/opt/homebrew", "/usr/local"] {
+            let cellar = URL(fileURLWithPath: prefijo + "/Cellar")
+            guard Rutas.esCarpeta(cellar) else { continue }
+            var viejas: [URL] = []
+            var nombres: [String] = []
+            for formula in Rutas.hijos(cellar) where Rutas.esCarpeta(formula) {
+                let versiones = Rutas.hijos(formula).filter { Rutas.esCarpeta($0) && !$0.lastPathComponent.hasPrefix(".") }
+                guard versiones.count > 1, access(formula.path, W_OK) == 0 else { continue }
+                let n = formula.lastPathComponent
+                // La versión en uso es a la que apunta opt/<fórmula>. Si no se sabe, no se toca nada.
+                guard let actual = Self.destinoDeEnlace(prefijo + "/opt/" + n) else { continue }
+                let fijada = Self.destinoDeEnlace(prefijo + "/var/homebrew/pinned/" + n)
+                for v in versiones where v.lastPathComponent != actual && v.lastPathComponent != fijada {
+                    viejas.append(v)
+                    nombres.append("\(n) \(v.lastPathComponent)")
+                }
+            }
+            guard !viejas.isEmpty else { continue }
+            r.append(Elemento(
+                nombre: "Versiones antiguas de Homebrew",
+                detalle: "\(viejas.count) \(viejas.count == 1 ? "versión" : "versiones") que ya actualizaste: \(Formato.listaCorta(nombres.sorted(), maximo: 4)).",
+                consecuencia: "Nada: Homebrew ya usa las versiones nuevas. Es lo mismo que hace «brew cleanup».",
+                rutas: viejas, categoria: .desarrollo, riesgo: .seguro,
+                motivos: [.bien("mug.fill", "Ya actualizadas", "Cada fórmula apunta a su versión nueva; estas ya no se usan.")],
+                enUso: .proceso(nombre: "Homebrew", patron: "/library/homebrew/brew.rb"), dueno: "Homebrew"))
+        }
+        return r
+    }
+
+    /// «/opt/homebrew/opt/node» → «20.1.0» (la última parte de a dónde apunta el enlace).
+    private static func destinoDeEnlace(_ ruta: String) -> String? {
+        guard let destino = try? FileManager.default.destinationOfSymbolicLink(atPath: ruta) else { return nil }
+        return (destino as NSString).lastPathComponent
+    }
+
+    /// Paquetes comprimidos que conda ya descomprimió (lo que borra «conda clean --tarballs»).
+    private func conda() -> [Elemento] {
+        var r: [Elemento] = []
+        for raiz in ["miniconda3", "anaconda3", "miniforge3", "mambaforge", ".conda"] {
+            let comprimidos = Rutas.hijos(Rutas.enHome(raiz + "/pkgs"))
+                .filter { $0.lastPathComponent.hasSuffix(".tar.bz2") || $0.pathExtension == "conda" }
+            guard !comprimidos.isEmpty else { continue }
+            r.append(Elemento(
+                nombre: "Descargas de conda (\(raiz))",
+                detalle: "\(comprimidos.count) paquetes comprimidos que conda ya descomprimió.",
+                consecuencia: "Nada: los paquetes ya están instalados. Es lo mismo que «conda clean --tarballs».",
+                rutas: comprimidos, categoria: .desarrollo, riesgo: .seguro, seleccionado: true,
+                motivos: [.bien("archivebox.fill", "Ya descomprimidos", "Conda solo los necesita para instalar, y ya lo hizo.")],
+                enUso: .proceso(nombre: "conda", patron: "/bin/conda"), dueno: "conda"))
+        }
+        return r
+    }
+
     // MARK: - Cachés de aplicaciones
 
     private func cachesApps(_ c: Contexto) -> [Elemento] {
@@ -673,6 +952,86 @@ struct Escaner {
                 guard !id.hasPrefix("com.apple."), Rutas.existe(cache), c.apps.estaInstalado(carpeta: id) else { continue }
                 let app = c.apps.nombreApp(para: id) ?? nombreBonito(id)
                 r.append(cacheDeApp(app: app, clave: id, rutas: [cache]))
+            }
+            // Adjuntos que abriste desde Mail: copias, los originales siguen en tus correos.
+            let adjuntos = Rutas.enHome("Library/Containers/com.apple.mail/Data/Library/Mail Downloads")
+            if Rutas.esCarpeta(adjuntos) {
+                r.append(Elemento(
+                    nombre: "Adjuntos abiertos desde Mail",
+                    detalle: "Copias de los adjuntos que abriste o previsualizaste desde Mail.",
+                    consecuencia: "Los originales siguen en tus correos. Si editaste algún adjunto y lo guardaste aquí, esa sería la única copia: revísalo antes.",
+                    rutas: [adjuntos], categoria: .cachesApps, riesgo: .revisar,
+                    motivos: [.info("paperclip", "Copias de adjuntos", "Mail las crea cada vez que abres un adjunto y no las borra.")],
+                    enUso: .app(nombre: "Mail", claves: ["com.apple.mail"]), dueno: "Mail"))
+            }
+        }
+        return r
+    }
+
+    // MARK: - Temporales del sistema (/var/folders)
+
+    /// Temporales y cachés que macOS guarda para tu usuario fuera de la carpeta personal.
+    /// Solo se ofrece lo que ningún programa tiene abierto (según `lsof`); si no se puede saber, nada.
+    private func temporales(_ c: Contexto) -> [Elemento] {
+        var r: [Elemento] = []
+        let abiertos = ArchivosAbiertos.capturar()
+        guard abiertos.disponible else { return [] }
+        let ahora = Date()
+
+        if let t = Sistema.temporal {
+            let enUso = abiertos.hijosEnUso(de: t)
+            var viejos: [URL] = []
+            for h in Rutas.hijos(URL(fileURLWithPath: t)) {
+                let n = h.lastPathComponent
+                // TemporaryItems guarda documentos a medio guardar: nunca se toca.
+                guard !n.hasPrefix("."), n != "TemporaryItems", !enUso.contains(n),
+                      c.procesos.appAbierta([n]) == nil else { continue }
+                let ultimo = c.indice.masReciente(de: [h]) ?? Fechas.modificacion(h) ?? ahora
+                guard ahora.timeIntervalSince(ultimo) > 3 * 86400 else { continue }
+                viejos.append(h)
+            }
+            if !viejos.isEmpty {
+                r.append(Elemento(
+                    nombre: "Temporales viejos de apps",
+                    detalle: "\(viejos.count) carpetas y archivos temporales que las apps dejaron en \(Formato.rutaCorta(t)).",
+                    consecuencia: "Nada: ningún programa los tiene abiertos y macOS los borraría al reiniciar.",
+                    rutas: viejos, categoria: .temporales, riesgo: .seguro, seleccionado: true,
+                    motivos: [.bien("clock.arrow.circlepath", "Sin uso", "Llevan más de 3 días sin cambios y nada los tiene abiertos ahora mismo.")]))
+            }
+        }
+
+        if let cachesSistema = Sistema.caches {
+            let enUso = abiertos.hijosEnUso(de: cachesSistema)
+            var compilador: [URL] = []
+            var deApps: [(url: URL, nombre: String, clave: String, instalada: Bool)] = []
+            for h in Rutas.hijos(URL(fileURLWithPath: cachesSistema)) where Rutas.esCarpeta(h) {
+                let n = h.lastPathComponent
+                guard !n.hasPrefix("."), !enUso.contains(n) else { continue }
+                if n == "clang" || n.hasPrefix("org.llvm.clang") || n == "com.apple.DeveloperTools" || n.hasPrefix("com.apple.dt.") {
+                    compilador.append(h)
+                } else if !n.hasPrefix("com.apple."), n.contains(".") {
+                    let instalada = c.apps.estaInstalado(carpeta: n)
+                    deApps.append((h, c.apps.nombreApp(para: n) ?? nombreBonito(n), n, instalada))
+                }
+            }
+            if !compilador.isEmpty {
+                r.append(Elemento(
+                    nombre: "Cachés del compilador (Xcode y Clang)",
+                    detalle: "Módulos precompilados de Clang y archivos temporales de las herramientas de Xcode.",
+                    consecuencia: "Se regeneran en la próxima compilación (que irá algo más lenta).",
+                    rutas: compilador, categoria: .temporales, riesgo: .seguro, seleccionado: true,
+                    motivos: [.bien("arrow.triangle.2.circlepath", "Se regenera", "El compilador los vuelve a crear cuando los necesita.")],
+                    enUso: Self.xcodeUso, dueno: "Xcode"))
+            }
+            for a in deApps {
+                r.append(Elemento(
+                    nombre: a.instalada ? "Caché de sistema de \(a.nombre)" : "Caché de sistema de una app borrada (\(a.nombre))",
+                    detalle: "Caché que macOS guarda para \(a.nombre) fuera de tu carpeta personal.",
+                    consecuencia: a.instalada ? "\(a.nombre) la vuelve a crear cuando la necesita." : "Nada: la app ya no está instalada.",
+                    rutas: [a.url], categoria: .temporales, riesgo: .seguro, seleccionado: true,
+                    motivos: [a.instalada ? .bien("arrow.triangle.2.circlepath", "Se regenera", "Es una caché: \(a.nombre) la reconstruye sola.")
+                                          : .bien("magnifyingglass", "App no instalada", "No encontré la app a la que pertenece.")],
+                    enUso: .app(nombre: a.nombre, claves: [a.clave, a.nombre]), dueno: a.nombre))
             }
         }
         return r
@@ -814,11 +1173,13 @@ struct Escaner {
     private func agrupar(_ restos: [Resto]) -> [[Resto]] {
         let genericos: Set<String> = ["google", "microsoft", "apple", "github", "adobe", "jetbrains", "mozilla",
                                       "electron", "openai", "amazon", "facebook", "meta"]
+        // «group.com.x.y» y «EQUIPO.x» se agrupan por lo que hay detrás del prefijo, no por «com» ni por el Team ID.
+        let identificadores = restos.map { AppsInstaladas.sinPrefijoDeGrupo($0.nombre) }
         var planas = Set<String>()
-        for r in restos where r.nombre.split(separator: ".").count < 3 { planas.insert(clavePlana(r.nombre)) }
-        let claves: [String] = restos.map { r in
-            let partes = r.nombre.lowercased().split(separator: ".").map(String.init)
-            guard partes.count >= 3 else { return clavePlana(r.nombre) }
+        for id in identificadores where id.split(separator: ".").count < 3 { planas.insert(clavePlana(id)) }
+        let claves: [String] = identificadores.map { id in
+            let partes = id.lowercased().split(separator: ".").map(String.init)
+            guard partes.count >= 3 else { return clavePlana(id) }
             if let ultima = partes.last.map(AppsInstaladas.normalizar), planas.contains(ultima) { return ultima }
             let fabricante = AppsInstaladas.normalizar(partes[1])
             return genericos.contains(fabricante) ? fabricante + AppsInstaladas.normalizar(partes[2]) : fabricante
@@ -844,11 +1205,12 @@ struct Escaner {
     }
 
     private func nombreDeGrupo(_ grupo: [Resto], _ c: Contexto) -> String {
-        let planos = grupo.filter { $0.nombre.split(separator: ".").count < 3 && $0.lugar != "Agente de inicio" }
-        if let mayor = planos.max(by: { c.indice.bytes(de: $0.url) < c.indice.bytes(de: $1.url) }) { return mayor.nombre }
-        let partes = grupo[0].nombre.split(separator: ".")
+        func id(_ r: Resto) -> String { AppsInstaladas.sinPrefijoDeGrupo(r.nombre) }
+        let planos = grupo.filter { id($0).split(separator: ".").count < 3 && $0.lugar != "Agente de inicio" }
+        if let mayor = planos.max(by: { c.indice.bytes(de: $0.url) < c.indice.bytes(de: $1.url) }) { return id(mayor) }
+        let partes = id(grupo[0]).split(separator: ".")
         if partes.count >= 3 { return String(partes[1]).capitalized }
-        return grupo[0].nombre
+        return id(grupo[0])
     }
 
     // MARK: - Proyectos
@@ -860,8 +1222,15 @@ struct Escaner {
         var r: [Elemento] = []
         for (raiz, artefactos) in porProyecto {
             let nombre = Rutas.nombre(raiz)
-            let regenerables = artefactos.filter { $0.tipo != .venv }
+            var regenerables = artefactos.filter { $0.tipo != .venv }
             let venvs = artefactos.filter { $0.tipo == .venv }
+            // Lo que está guardado en git no es compilación (por ejemplo, un build/ con recursos hechos a mano).
+            var versionadas: [String] = []
+            if c.indice.repos.contains(raiz), !regenerables.isEmpty {
+                let conArchivos = carpetasVersionadas(raiz, regenerables.map(\.ruta))
+                versionadas = regenerables.filter { conArchivos.contains($0.ruta) }.map { String($0.ruta.dropFirst(raiz.count + 1)) }
+                regenerables.removeAll { conArchivos.contains($0.ruta) }
+            }
 
             var actividad = c.indice.masRecientePropio(de: raiz)
             if c.indice.repos.contains(raiz), let commit = ultimoCommit(raiz) {
@@ -881,6 +1250,10 @@ struct Escaner {
                 if let compilado = c.indice.masReciente(de: urls), Date().timeIntervalSince(compilado) < 3600 {
                     motivos.append(.aviso("hammer.fill", "Compilado hace poco",
                                           "Se compiló hace menos de una hora: quizá lo tengas abierto en el editor."))
+                }
+                if !versionadas.isEmpty {
+                    motivos.append(.info("lock.doc.fill", "Dejé fuera lo versionado",
+                                         "No incluyo \(Formato.lista(versionadas)): tiene archivos guardados en git, así que no es solo compilación."))
                 }
                 let relativas = regenerables.map { String($0.ruta.dropFirst(raiz.count + 1)) }.sorted()
                 r.append(Elemento(
@@ -914,6 +1287,17 @@ struct Escaner {
             actual = Rutas.padre(actual)
         }
         return candidata
+    }
+
+    /// Cuáles de estas carpetas tienen archivos guardados en el repositorio (`git ls-files`).
+    private func carpetasVersionadas(_ repo: String, _ carpetas: [String]) -> Set<String> {
+        let relativas = carpetas.map { String($0.dropFirst(repo.count + 1)) }
+        let salida = Shell.ejecutar("/usr/bin/git", ["-C", repo, "ls-files", "-z", "--"] + relativas, limite: 15).salida
+        var r = Set<String>()
+        for archivo in salida.split(separator: "\0") {
+            for (i, rel) in relativas.enumerated() where archivo.hasPrefix(rel + "/") { r.insert(carpetas[i]) }
+        }
+        return r
     }
 
     private func ultimoCommit(_ repo: String) -> Date? {
@@ -952,6 +1336,8 @@ struct Escaner {
         ".cargo", ".rustup", ".nvm", ".vscode", ".zsh_sessions", ".docker", ".kube", ".aws", ".azure",
         ".oh-my-zsh", ".claude", ".git", ".cups", ".bun", ".pyenv", ".rbenv", ".sdkman", ".swiftpm",
         ".expo", ".cocoapods", ".yarn", ".pub-cache", ".nuget", ".ollama", ".CFUserTextEncoding", ".DS_Store",
+        // Se analizan aparte (cachés de desarrollo, VS Code y derivados).
+        ".dartServer", ".skiko", ".vscode-insiders", ".vscode-oss", ".cursor", ".windsurf", ".conda",
     ]
 
     private enum ClaseSubcarpeta { case temporal, registros, reinstalable, personal }
@@ -959,7 +1345,9 @@ struct Escaner {
     private func clasificarSubcarpeta(_ nombre: String) -> ClaseSubcarpeta? {
         let n = nombre.lowercased()
         if ["cache", "caches", ".cache", "tmp", ".tmp", "temp", "crashpad", "crash-reports", "crashes"].contains(n) { return .temporal }
-        if n == "logs" || n == "log" || n.hasPrefix("log") || n.hasSuffix(".log") { return .registros }
+        // «logs», «log-2024», «server.log»… pero no «login» ni «logic».
+        if n == "logs" || n == "log" || n.hasPrefix("logs") || n.hasPrefix("log-") || n.hasPrefix("log_")
+            || n.hasSuffix(".log") { return .registros }
         if ["sessions", "history", "conversations", "chats", "threads", "memories", "memory", "projects",
             "workspaces", "archived_sessions"].contains(n) || n.contains("history") || n.hasSuffix(".sqlite") || n.hasSuffix(".db") {
             return .personal
@@ -1082,16 +1470,29 @@ struct Escaner {
             if ext == "apk" || ext == "xapk" || ext == "ipa" {
                 detalle = ext == "ipa" ? "Instalador de una app de iPhone." : "Instalador de una app de Android."
                 motivos.append(.info("iphone", "App para el teléfono", "Sirve para instalar la app en un teléfono, emulador o simulador."))
+            } else if ext == "ipsw" {
+                detalle = "Firmware de iPhone o iPad (sirve para restaurar el dispositivo)."
+                motivos.append(.info("iphone.gen3", "Firmware", "El Finder lo vuelve a descargar si alguna vez restauras el dispositivo."))
             } else {
                 detalle = "Instalador."
-                let programa = nombreDelPrograma(url.deletingPathExtension().lastPathComponent)
-                if let programa, let app = c.apps.nombreApp(para: programa) {
-                    motivos.append(.bien("checkmark.circle.fill", "Ya está instalada", "Ya tienes \(app) instalada: este instalador ya no hace falta."))
-                    riesgo = .seguro
-                    seleccionado = dias > 3
+                // Se compara el nombre completo del programa («Google Earth Pro»), nunca solo la primera palabra.
+                let base = Self.nombreBase(url.deletingPathExtension().lastPathComponent)
+                let versionArchivo = Self.nombreYVersion(url)?.1
+                if let app = c.apps.appParaInstalador(base) {
+                    if let va = versionArchivo, let vi = app.version, va.compare(vi, options: .numeric) == .orderedDescending {
+                        motivos.append(.aviso("arrow.up.circle.fill", "Más nuevo que el instalado",
+                                              "Este instalador es la versión \(va) y tienes instalada la \(vi): quizá todavía no lo instalaste."))
+                    } else {
+                        let version = app.version.map { " \($0)" } ?? ""
+                        motivos.append(.bien("checkmark.circle.fill", "Ya está instalada",
+                                             "Ya tienes \(app.nombre)\(version) instalada: este instalador ya no hace falta."))
+                        riesgo = .seguro
+                        seleccionado = dias > 3
+                    }
                 } else {
+                    let quien = base.isEmpty ? "el programa" : "«\(base)»"
                     motivos.append(.info("questionmark.app.fill", "No lo veo instalado",
-                                         "No encontré \(programa?.capitalized ?? "el programa") instalado. Si todavía no lo instalaste, guárdalo."))
+                                         "No encontré \(quien) entre tus apps. Si todavía no lo instalaste, guárdalo."))
                 }
             }
             if let (base, _) = Self.nombreYVersion(url), let nueva = masNueva[a.carpeta + "|" + base], nueva.ruta != a.ruta {
@@ -1110,18 +1511,57 @@ struct Escaner {
                 rutas: [url], ultimoUso: fecha, categoria: .instaladores, riesgo: riesgo, seleccionado: seleccionado,
                 motivos: motivos, imagenMontada: montada))
         }
-        // Copias sueltas de apps que ya están en Aplicaciones.
+        // Copias sueltas de apps que ya están en Aplicaciones. Solo sobran si son la misma versión.
         for ruta in c.indice.apps {
             let url = URL(fileURLWithPath: ruta)
-            guard let id = Bundle(url: url)?.bundleIdentifier?.lowercased(), c.apps.idsEnAplicaciones.contains(id) else { continue }
+            guard let info = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist")),
+                  let id = (info["CFBundleIdentifier"] as? String)?.lowercased(),
+                  c.apps.idsEnAplicaciones.contains(id) else { continue }
             let nombre = url.deletingPathExtension().lastPathComponent
+            let version = info["CFBundleShortVersionString"] as? String
+            let instalada = c.apps.versionEnAplicaciones[id]
+            let mismaVersion = version != nil && version == instalada
             r.append(Elemento(
                 nombre: "Copia de \(nombre)",
-                detalle: "Una copia de \(nombre) en \(Formato.rutaCorta(url.deletingLastPathComponent())).",
-                consecuencia: "Nada: seguirás usando la que está en Aplicaciones.",
-                rutas: [url], categoria: .instaladores, riesgo: .seguro, seleccionado: true,
-                motivos: [.bien("checkmark.circle.fill", "Ya está en Aplicaciones", "Tienes \(nombre) instalada en Aplicaciones: esta copia sobra.")],
+                detalle: "Una copia de \(nombre)\(version.map { " \($0)" } ?? "") en \(Formato.rutaCorta(url.deletingLastPathComponent())).",
+                consecuencia: mismaVersion ? "Nada: seguirás usando la que está en Aplicaciones."
+                                           : "Perderás esta versión; seguirás teniendo la \(instalada ?? "otra") en Aplicaciones.",
+                rutas: [url], categoria: .instaladores, riesgo: mismaVersion ? .seguro : .revisar, seleccionado: mismaVersion,
+                motivos: [mismaVersion
+                    ? .bien("checkmark.circle.fill", "Ya está en Aplicaciones", "Tienes la misma versión (\(version ?? "")) en Aplicaciones: esta copia sobra.")
+                    : .info("square.on.square", "Otra versión",
+                            "Esta copia es la \(version ?? "?") y en Aplicaciones tienes la \(instalada ?? "?"). Si la guardas a propósito (una beta, una versión anterior), no la borres.")],
                 enUso: .app(nombre: nombre, claves: [id]), dueno: nombre))
+        }
+
+        // Firmware de iPhone y iPad que el Finder descargó para actualizar o restaurar.
+        var firmware: [URL] = []
+        for carpeta in ["iPhone Software Updates", "iPad Software Updates", "iPod Software Updates"] {
+            firmware += Rutas.hijos(Rutas.enHome("Library/iTunes/" + carpeta)).filter { $0.pathExtension.lowercased() == "ipsw" }
+        }
+        if !firmware.isEmpty {
+            r.append(Elemento(
+                nombre: "Firmware de iPhone y iPad descargado",
+                detalle: "\(firmware.count) \(firmware.count == 1 ? "archivo" : "archivos") de sistema que el Finder descargó para actualizar o restaurar un dispositivo.",
+                consecuencia: "Nada: el Finder lo vuelve a descargar si alguna vez restauras el dispositivo.",
+                rutas: firmware, categoria: .instaladores, riesgo: .seguro, seleccionado: true,
+                motivos: [.bien("iphone.gen3", "Ya se usó", "El dispositivo ya se actualizó; el Finder no los necesita guardados.")],
+                dueno: "Finder"))
+        }
+
+        // Instaladores de macOS en Aplicaciones (más de 12 GB cada uno).
+        let sistemaActual = ProcessInfo.processInfo.operatingSystemVersion
+        for app in Rutas.hijos(URL(fileURLWithPath: "/Applications"))
+        where app.lastPathComponent.hasPrefix("Install macOS ") && app.pathExtension == "app" {
+            let nombre = app.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "Install ", with: "")
+            r.append(Elemento(
+                nombre: "Instalador de \(nombre)",
+                detalle: "El instalador completo de \(nombre). Tu Mac tiene macOS \(sistemaActual.majorVersion).\(sistemaActual.minorVersion).",
+                consecuencia: "Si lo necesitas para crear un USB de instalación, tendrás que volver a descargarlo de la App Store.",
+                rutas: [app], categoria: .instaladores, riesgo: .revisar,
+                motivos: [.info("arrow.down.app.fill", "Se puede volver a descargar",
+                                "Solo hace falta para instalar macOS en otro Mac o crear un USB de arranque.")],
+                dueno: "macOS"))
         }
         return r
     }
@@ -1135,14 +1575,30 @@ struct Escaner {
         return (base, version)
     }
 
-    /// «Cline_0.0.36_universal» → «cline»
-    private func nombreDelPrograma(_ archivo: String) -> String? {
-        let ruido: Set<String> = ["universal", "arm", "aarch", "x", "amd", "intel", "mac", "macos", "osx", "darwin",
-                                  "setup", "installer", "install", "latest", "stable", "beta", "release", "build",
-                                  "apple", "silicon", "dmg", "pkg", "v", "for", "de", "para"]
-        let palabras = archivo.split(whereSeparator: { !$0.isLetter }).map { $0.lowercased() }
-            .filter { !ruido.contains($0) && $0.count >= 2 }
-        return palabras.first
+    /// El nombre completo del programa, sin versión ni arquitectura:
+    /// «Google Earth Pro 7.3.6 (arm64)» → «googleearthpro», «Cline_0.0.36_universal» → «cline»,
+    /// «zoomusInstallerFull» → «zoomus».
+    static func nombreBase(_ archivo: String) -> String {
+        let ruido: Set<String> = ["universal", "arm", "arm64", "aarch64", "x64", "x86", "amd64", "intel", "mac", "macos",
+                                  "osx", "darwin", "setup", "installer", "install", "instalador", "latest", "stable",
+                                  "beta", "release", "build", "apple", "silicon", "dmg", "pkg", "full", "signed",
+                                  "for", "de", "para"]
+        let sufijos = ["installerfull", "installer", "install", "setup", "universal", "full"]
+        var palabras: [String] = []
+        for (i, trozo) in archivo.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).enumerated() {
+            var t = trozo.lowercased()
+            // La versión empieza en el primer número suelto («7», «v2», «2024»): ahí termina el nombre.
+            let esNumero = t.allSatisfy { $0.isNumber }
+            let esVersion = esNumero || (t.count > 1 && t.hasPrefix("v") && t.dropFirst().allSatisfy { $0.isNumber })
+            if esVersion {
+                if i > 0 { break }
+                continue
+            }
+            if ruido.contains(t) { continue }
+            for s in sufijos where t.count > s.count + 2 && t.hasSuffix(s) { t = String(t.dropLast(s.count)) }
+            palabras.append(t)
+        }
+        return AppsInstaladas.normalizar(palabras.joined())
     }
 
     private func imagenesMontadas() -> [String: (dispositivo: String, volumen: String)] {
@@ -1202,12 +1658,15 @@ struct Escaner {
 
     private func papelera() -> [Elemento] {
         let trash = Rutas.enHome(".Trash")
-        guard let contenido = try? FileManager.default.contentsOfDirectory(atPath: trash.path), !contenido.isEmpty else { return [] }
+        guard let contenido = try? FileManager.default.contentsOfDirectory(atPath: trash.path),
+              case let visibles = contenido.filter({ $0 != ".DS_Store" }), !visibles.isEmpty else { return [] }
+        // El índice no entra en la Papelera: se mide aparte.
         return [Elemento(
-            nombre: "Contenido de la Papelera (\(contenido.count) \(contenido.count == 1 ? "elemento" : "elementos"))",
+            nombre: "Contenido de la Papelera (\(visibles.count) \(visibles.count == 1 ? "elemento" : "elementos"))",
             detalle: "Lo que ya enviaste a la Papelera.",
-            consecuencia: "Se borra para siempre: ya no podrás recuperarlo.",
-            rutas: [trash], categoria: .papelera, riesgo: .revisar, accion: .vaciarPapelera,
+            consecuencia: "Se borra para siempre: ya no podrás recuperarlo. Lo que mandes a la Papelera en esta misma limpieza no se toca.",
+            rutas: [trash], tamanoFijo: Limpiador.tamanoPapelera(), categoria: .papelera, riesgo: .revisar,
+            accion: .vaciarPapelera,
             motivos: [.info("trash.fill", "Ya descartado", "Son cosas que tú mismo enviaste a la Papelera.")])]
     }
 
@@ -1268,7 +1727,7 @@ struct Escaner {
                             consecuencia: "Se borra solo esta copia; la de \(Formato.rutaCorta(original.carpeta)) se conserva.",
                             rutas: [copia.url], ultimoUso: copia.fecha, categoria: .duplicados, riesgo: .revisar,
                             seleccionado: copia.ruta.hasPrefix(descargas) && !original.ruta.hasPrefix(descargas),
-                            motivos: motivos))
+                            motivos: motivos, conservar: original.ruta))
                     }
                 }
             }
@@ -1291,7 +1750,7 @@ struct Escaner {
 
     private func grandes(_ c: Contexto, ofrecidas: [String]) -> [Elemento] {
         let descargas = Rutas.enHome("Downloads").path + "/"
-        let instaladores: Set<String> = ["dmg", "pkg", "mpkg", "iso", "xip", "apk", "xapk", "ipa"]
+        let instaladores: Set<String> = ["dmg", "pkg", "mpkg", "iso", "xip", "apk", "xapk", "ipa", "ipsw"]
         let comprimidos: Set<String> = ["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst"]
         func cubierta(_ ruta: String) -> Bool { ofrecidas.contains { ruta == $0 || ruta.hasPrefix($0 + "/") } }
 
@@ -1306,7 +1765,7 @@ struct Escaner {
             case .personal, .compartida:
                 let limite: Int64 = a.ruta.hasPrefix(descargas) ? 50_000_000 : 100_000_000
                 guard a.bytes >= limite || extraido != nil else { continue }
-            case .library, .oculta:
+            case .library, .oculta, .sistema:
                 guard a.bytes >= 500_000_000, !cubierta(a.ruta), !a.ruta.contains("/com.apple.") else { continue }
             }
 

@@ -111,7 +111,7 @@ struct MiniDisco: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Image(systemName: "internaldrive.fill")
-                Text("Macintosh HD").font(.caption.weight(.semibold))
+                Text(almacen.disco.nombre).font(.caption.weight(.semibold))
                 Spacer()
             }
             BarraDisco(fraccion: almacen.disco.fraccionUsada, extra: 0)

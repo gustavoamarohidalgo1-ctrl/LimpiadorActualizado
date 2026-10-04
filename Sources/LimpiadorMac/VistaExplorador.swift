@@ -204,7 +204,7 @@ struct VistaExplorador: View {
             try FileManager.default.trashItem(at: url, resultingItemURL: &destino)
             if let d = destino?.path {
                 let tamano = hijos.first { $0.url == url }?.tamano ?? 0
-                Historial.guardarUltima(LimpiezaGuardada(fecha: Date(), movimientos: [
+                Historial.guardar(LimpiezaGuardada(fecha: Date(), movimientos: [
                     Movimiento(original: url.path, enPapelera: d, nombre: url.lastPathComponent, bytes: tamano),
                 ]))
                 Historial.registrar(["papelera\t\(tamano)\t\(url.path)"])

@@ -5,6 +5,8 @@ struct HojaConfirmacion: View {
     @Environment(\.dismiss) private var cerrar
     @State private var modo: ModoLimpieza = .papelera
     @State private var entendido = false
+    /// Lo que se libera de verdad (descontando clones de APFS, instantáneas y enlaces duros).
+    @State private var real: EspacioReal.Resultado?
 
     var body: some View {
         let sel = almacen.efectivos
@@ -12,6 +14,7 @@ struct HojaConfirmacion: View {
         let revisar = sel.filter { $0.riesgo == .revisar }
         let cuidado = sel.filter { $0.riesgo == .cuidado }
         let abiertos = sel.filter { $0.abiertoAhora }
+        let irreversibles = sel.filter { !$0.accion.sePuedeDeshacer }
 
         VStack(alignment: .leading, spacing: 16) {
             if almacen.limpiando {
@@ -33,6 +36,10 @@ struct HojaConfirmacion: View {
                     }
                 }
                 .frame(maxHeight: 300)
+
+                espacioReal(sel)
+
+                if !irreversibles.isEmpty { avisoIrreversible(irreversibles) }
 
                 if !abiertos.isEmpty {
                     HStack(alignment: .top, spacing: 10) {
@@ -89,6 +96,50 @@ struct HojaConfirmacion: View {
         .onChange(of: almacen.resultado != nil) { _, hay in
             if hay { cerrar() }
         }
+        .task(id: almacen.efectivos.map(\.id)) {
+            real = nil
+            let rutas = almacen.efectivos.filter { $0.accion == .borrar }.flatMap { $0.rutas.map(\.path) }
+            let r = await Task.detached(priority: .userInitiated) { EspacioReal.calcular(rutas) }.value
+            if !Task.isCancelled { real = r }
+        }
+    }
+
+    /// Cuánto se libera de verdad: el tamaño en disco no cuenta que los clones y las instantáneas comparten espacio.
+    private func espacioReal(_ sel: [Elemento]) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "scalemass.fill").foregroundStyle(.green)
+            if let real {
+                let otros = sel.filter { !$0.accion.sePuedeDeshacer }.reduce(Int64(0)) { $0 + $1.tamano }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Se liberan de verdad \(Formato.bytes(real.liberable + otros))"
+                         + (modo == .papelera && real.liberable > 0 ? " (lo que va a la Papelera, al vaciarla)" : ""))
+                        .font(.callout.weight(.medium))
+                    if real.compartido >= 1_000_000 {
+                        Text("\(Formato.bytes(real.compartido)) no se liberan: los comparten clones de APFS, instantáneas de Time Machine o enlaces a archivos que se quedan.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                ProgressView().controlSize(.small)
+                Text("Midiendo cuánto espacio se libera de verdad…").font(.callout).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func avisoIrreversible(_ lista: [Elemento]) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(.red).font(.title3)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(lista.count == 1 ? "Esto no se puede deshacer" : "Estas \(lista.count) acciones no se pueden deshacer")
+                    .font(.callout.weight(.semibold))
+                Text(Formato.listaCorta(lista.map { "\($0.nombre): \($0.accion.descripcionIrreversible)" }, maximo: 4)
+                     + ". No pasan por la Papelera, elijas el modo que elijas.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var progreso: some View {

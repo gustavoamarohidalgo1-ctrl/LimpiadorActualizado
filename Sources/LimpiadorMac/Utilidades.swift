@@ -5,7 +5,7 @@ import Foundation
 
 enum Shell {
     /// Ejecuta un programa y devuelve su salida estándar (stderr se descarta).
-    /// Si tarda más de `limite` segundos, se detiene.
+    /// Si tarda más de `limite` segundos, se detiene y la salida se da por vacía.
     @discardableResult
     static func ejecutar(_ programa: String, _ argumentos: [String], limite: TimeInterval = 120) -> (estado: Int32, salida: String) {
         final class Caja: @unchecked Sendable { var datos = Data() }
@@ -27,12 +27,16 @@ enum Shell {
             try? tubo.fileHandleForWriting.close()
             return (-1, "")
         }
-        if lectura.wait(timeout: .now() + limite) == .timedOut {
+        var completo = lectura.wait(timeout: .now() + limite) != .timedOut
+        if !completo {
             p.terminate()
-            _ = lectura.wait(timeout: .now() + 1)
+            completo = lectura.wait(timeout: .now() + 2) != .timedOut
+            // Si ni así termina, se le obliga: esperar para siempre colgaría el análisis.
+            if p.isRunning { kill(p.processIdentifier, SIGKILL) }
         }
         p.waitUntilExit()
-        return (p.terminationStatus, String(decoding: caja.datos, as: UTF8.self))
+        // Si la lectura no terminó (un proceso hijo sigue con la salida abierta), no se toca: sigue en otro hilo.
+        return (p.terminationStatus, completo ? String(decoding: caja.datos, as: UTF8.self) : "")
     }
 }
 
@@ -90,6 +94,12 @@ enum Rutas {
     static func existe(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
     static func existe(_ ruta: String) -> Bool { FileManager.default.fileExists(atPath: ruta) }
 
+    /// Existe aunque sea un enlace roto (no lo sigue).
+    static func existeSinSeguir(_ ruta: String) -> Bool {
+        var st = stat()
+        return lstat(ruta, &st) == 0
+    }
+
     static func esCarpeta(_ url: URL) -> Bool {
         var dir: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &dir) && dir.boolValue
@@ -102,6 +112,34 @@ enum Rutas {
 
     static func padre(_ ruta: String) -> String { (ruta as NSString).deletingLastPathComponent }
     static func nombre(_ ruta: String) -> String { (ruta as NSString).lastPathComponent }
+
+    /// ¿Alguna carpeta superior de `ruta` está en el conjunto?
+    static func estaDentro(_ ruta: String, de conjunto: Set<String>) -> Bool {
+        var actual = Substring(ruta)
+        while let barra = actual.lastIndex(of: "/"), barra > actual.startIndex {
+            actual = actual[..<barra]
+            if conjunto.contains(String(actual)) { return true }
+        }
+        return false
+    }
+}
+
+/// Carpetas que macOS reserva para tu usuario fuera de la carpeta personal (/var/folders/…).
+enum Sistema {
+    /// Temporales de tu usuario. macOS borra lo viejo al reiniciar, pero en un Mac que casi nunca se reinicia se acumula.
+    static let temporal: String? = ruta(Int32(_CS_DARWIN_USER_TEMP_DIR))
+    /// Cachés de tu usuario: compiladores, shaders, apps…
+    static let caches: String? = ruta(Int32(_CS_DARWIN_USER_CACHE_DIR))
+
+    private static func ruta(_ nombre: Int32) -> String? {
+        let tam = confstr(nombre, nil, 0)
+        guard tam > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: tam)
+        guard confstr(nombre, &buffer, tam) > 0 else { return nil }
+        let r = String(cString: buffer)
+        guard r.count > 1 else { return nil }
+        return URL(fileURLWithPath: r).standardizedFileURL.path
+    }
 }
 
 /// Reglas que impiden borrar cosas importantes pase lo que pase.
@@ -113,219 +151,55 @@ enum Seguridad {
                    "Library/Mail", "Library/Messages", "Library/Mobile Documents", "Library/CloudStorage",
                    "Library/LaunchAgents", "Desktop", "Documents", "Downloads", "Movies", "Music", "Pictures",
                    "Public", "Applications", ".Trash", ".ssh", ".gnupg", ".config", ".local", ".cache", ".npm",
-                   ".gradle", ".android", ".android/avd"]
+                   ".gradle", ".android", ".android/avd", ".vscode", ".vscode/extensions", ".cursor",
+                   ".cursor/extensions"]
         return Set(rel.map { $0.isEmpty ? h : h + "/" + $0 })
     }()
 
+    /// Carpetas de sistema de tu usuario: se puede borrar lo que tienen dentro, nunca ellas mismas.
+    private static let raicesSistema: [String] = [Sistema.temporal, Sistema.caches].compactMap { $0 }.map(normalizada)
+
+    /// La ruta real, sin «/private» delante de /var y /tmp (macOS lo quita o no según si el archivo existe).
+    static func normalizada(_ ruta: String) -> String {
+        var p = URL(fileURLWithPath: ruta).standardizedFileURL.resolvingSymlinksInPath().path
+        for prefijo in ["/private/var/", "/private/tmp/", "/private/etc/"] where p.hasPrefix(prefijo) {
+            p = String(p.dropFirst("/private".count))
+        }
+        return p
+    }
+
     static func sePuedeBorrar(_ url: URL) -> Bool {
-        let p = url.standardizedFileURL.resolvingSymlinksInPath().path
-        let h = Rutas.home.path
-        guard p.hasPrefix(h + "/") || p.hasPrefix("/Users/Shared/") else { return false }
-        if protegidas.contains(p) { return false }
-        if p.contains("/Library/Keychains") || p.contains("/.ssh/") || p.hasSuffix("/.git") { return false }
-        // Nunca se borra una llave de firma suelta, aunque alguien la seleccione.
+        let p = normalizada(url.path)
+        // Nunca se borra una llave de firma, un llavero, una llave SSH ni el historial de git, aunque alguien lo seleccione.
         let ext = url.pathExtension.lowercased()
         if ext == "jks" || ext == "keystore" { return false }
-        return true
+        if p.contains("/Library/Keychains") || p.contains("/.ssh/") || p.hasSuffix("/.ssh")
+            || p.hasSuffix("/.git") || p.contains("/.git/") { return false }
+
+        let h = Rutas.home.path
+        if p == h || p.hasPrefix(h + "/") || p.hasPrefix("/Users/Shared/") { return !protegidas.contains(p) && p != h }
+        if let raiz = raicesSistema.first(where: { p.hasPrefix($0 + "/") }) { return p.count > raiz.count + 1 }
+        return esVersionDeHomebrew(p) || esInstaladorDeMacOS(p)
+    }
+
+    /// «/opt/homebrew/Cellar/node/20.1.0»: una versión concreta de una fórmula (nunca la fórmula entera).
+    static func esVersionDeHomebrew(_ p: String) -> Bool {
+        for cellar in ["/opt/homebrew/Cellar/", "/usr/local/Cellar/"] where p.hasPrefix(cellar) {
+            return p.dropFirst(cellar.count).split(separator: "/").count == 2
+        }
+        return false
+    }
+
+    /// «/Applications/Install macOS Sonoma.app»
+    static func esInstaladorDeMacOS(_ p: String) -> Bool {
+        let prefijo = "/Applications/Install macOS "
+        return p.hasPrefix(prefijo) && p.hasSuffix(".app") && !p.dropFirst("/Applications/".count).contains("/")
     }
 
     /// Comprueba si la app tiene Acceso total al disco (necesario para leer la Papelera y algunas carpetas).
     static func tieneAccesoTotal() -> Bool {
         let prueba = Rutas.enHome("Library/Safari")
         return (try? FileManager.default.contentsOfDirectory(atPath: prueba.path)) != nil
-    }
-}
-
-/// Lo que está instalado en este Mac, para saber qué carpetas son restos y a quién pertenece cada cosa.
-struct AppsInstaladas {
-    private(set) var bundleIDs: Set<String> = []
-    private(set) var fabricantes: Set<String> = []   // "com.google", "us.zoom"…
-    private(set) var nombres: Set<String> = []        // coincidencia flexible
-    private(set) var nombresExactos: Set<String> = [] // procesos del sistema, comandos
-    private(set) var comandos: Set<String> = []
-    /// Apps en /Applications (para saber si una copia suelta sobra).
-    private(set) var idsEnAplicaciones: Set<String> = []
-    private var nombrePorID: [String: String] = [:]
-    private var nombrePorNombre: [String: String] = [:]
-
-    static func normalizar(_ s: String) -> String {
-        s.lowercased().filter { $0.isLetter || $0.isNumber }
-    }
-
-    static func cargar(appsExtra: [String] = []) -> AppsInstaladas {
-        var r = AppsInstaladas()
-        let fm = FileManager.default
-        let carpetas = ["/Applications", "/System/Applications", Rutas.enHome("Applications").path,
-                        "/System/Library/CoreServices", "/Applications/Xcode.app/Contents/Applications",
-                        "/Applications/Xcode.app/Contents/Developer/Applications", "/Library/Application Support"]
-        for carpeta in carpetas {
-            guard let e = fm.enumerator(at: URL(fileURLWithPath: carpeta), includingPropertiesForKeys: nil,
-                                        options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
-            for case let url as URL in e {
-                if e.level > 3 { e.skipDescendants(); continue }
-                guard url.pathExtension == "app" else { continue }
-                r.agregarApp(url, enAplicaciones: carpeta == "/Applications")
-            }
-        }
-        // Apps que viven fuera de Aplicaciones (en el Escritorio, en Descargas…) también cuentan.
-        for ruta in appsExtra { r.agregarApp(URL(fileURLWithPath: ruta), enAplicaciones: false) }
-
-        for app in NSWorkspace.shared.runningApplications {
-            if let id = app.bundleIdentifier { r.agregarBundleID(id, nombre: app.localizedName) }
-            if let n = app.localizedName { r.agregarNombre(n) }
-        }
-        // Procesos y componentes del sistema: sus carpetas nunca son «restos».
-        for dir in ["/usr/libexec", "/usr/sbin", "/usr/bin", "/System/Library/PrivateFrameworks",
-                    "/System/Library/Frameworks", "/System/Library/CoreServices"] {
-            for n in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] {
-                r.nombresExactos.insert(normalizar((n as NSString).deletingPathExtension))
-            }
-        }
-        // Homebrew: fórmulas (comandos) y casks (apps).
-        for dir in ["/opt/homebrew/Cellar", "/usr/local/Cellar"] {
-            for n in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] { r.agregarComando(n) }
-        }
-        for dir in ["/opt/homebrew/Caskroom", "/usr/local/Caskroom"] {
-            for n in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] { r.agregarNombre(n); r.agregarComando(n) }
-        }
-        // Comandos instalados: el PATH real de la terminal más los sitios habituales.
-        var rutasComandos = Set(["/opt/homebrew/bin", "/usr/local/bin", Rutas.enHome(".local/bin").path,
-                                 Rutas.enHome(".npm-global/bin").path, Rutas.enHome(".bun/bin").path,
-                                 Rutas.enHome(".cargo/bin").path, "/opt/homebrew/lib/node_modules",
-                                 "/usr/local/lib/node_modules", Rutas.enHome(".local/share/uv/tools").path,
-                                 Rutas.enHome(".local/pipx/venvs").path])
-        rutasComandos.formUnion(pathDeLaTerminal())
-        for version in (try? fm.contentsOfDirectory(atPath: Rutas.enHome(".nvm/versions/node").path)) ?? [] {
-            rutasComandos.insert(Rutas.enHome(".nvm/versions/node/\(version)/bin").path)
-        }
-        for dir in rutasComandos {
-            for n in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] { r.agregarComando(n) }
-        }
-        return r
-    }
-
-    /// El PATH que ve tu terminal (incluye lo que agregan .zshrc y los instaladores).
-    private static func pathDeLaTerminal() -> [String] {
-        let salida = Shell.ejecutar("/bin/zsh", ["-lic", "print -r -- __PATH__$PATH"], limite: 4).salida
-        guard let linea = salida.split(separator: "\n").last(where: { $0.hasPrefix("__PATH__") }) else { return [] }
-        return linea.dropFirst(8).split(separator: ":").map(String.init)
-    }
-
-    private mutating func agregarApp(_ url: URL, enAplicaciones: Bool) {
-        let visible = url.deletingPathExtension().lastPathComponent
-        agregarNombre(visible)
-        guard let b = Bundle(url: url) else { return }
-        if let id = b.bundleIdentifier {
-            agregarBundleID(id, nombre: visible)
-            if enAplicaciones { idsEnAplicaciones.insert(id.lowercased()) }
-        }
-        for clave in ["CFBundleName", "CFBundleDisplayName", "CFBundleExecutable"] {
-            if let v = b.infoDictionary?[clave] as? String {
-                let k = Self.normalizar(v)
-                nombres.insert(k)
-                if nombrePorNombre[k] == nil { nombrePorNombre[k] = visible }
-            }
-        }
-    }
-
-    private mutating func agregarNombre(_ n: String) {
-        let k = Self.normalizar(n)
-        guard !k.isEmpty else { return }
-        nombres.insert(k)
-        if nombrePorNombre[k] == nil { nombrePorNombre[k] = n }
-    }
-
-    private mutating func agregarComando(_ n: String) {
-        let k = Self.normalizar(n)
-        guard !k.isEmpty else { return }
-        comandos.insert(k)
-        nombresExactos.insert(k)
-    }
-
-    private mutating func agregarBundleID(_ id: String, nombre: String?) {
-        let l = id.lowercased()
-        bundleIDs.insert(l)
-        if let nombre, nombrePorID[l] == nil { nombrePorID[l] = nombre }
-        // El «fabricante» (com.google.xxx -> google) también cuenta: muchas apps
-        // guardan sus datos en una carpeta con el nombre de la empresa.
-        let partes = l.split(separator: ".")
-        if partes.count >= 2 {
-            nombres.insert(Self.normalizar(String(partes[1])))
-            fabricantes.insert(partes.prefix(2).joined(separator: "."))
-        }
-        if let ultima = partes.last { nombres.insert(Self.normalizar(String(ultima))) }
-    }
-
-    /// Carpetas de macOS o genéricas que nunca se consideran restos.
-    private static let ignorar: Set<String> = [
-        "addressbook", "animoji", "callhistorydb", "callhistorytransactions", "categories", "clouddocs",
-        "crashreporter", "differentialprivacy", "diskimages", "facetime", "fileprovider", "intelligenceflow",
-        "knowledge", "music", "sesstorage", "appsubscriptions", "defaultstore", "defaultstoreshm",
-        "defaultstorewal", "mobilesync", "icloud", "dock", "syncservices", "cef", "electron", "caches",
-        "askpermission", "homekit", "mail", "safari", "photos", "contacts", "calendars", "notes", "reminders",
-        "stocks", "weather", "maps", "news", "tv", "podcasts", "books", "shortcuts", "siri", "voicememos",
-        "com", "org", "net", "io", "app", "apps", "data", "storage", "backups", "temp", "tmp", "logs",
-        "instruments", "xcode", "simulator", "coresimulator", "developer", "java", "python", "node",
-        "accounts", "identityservices", "diagnosticreports", "avatarcacheindex", "mobilemeaccounts",
-        "tokenbucketratelimiter", "contextstoreagent", "loginwindow", "pbs", "mbuseragent",
-        "networkserviceproxy", "familycircle", "coreparsec", "keychains", "limpiadormac", "geoservices",
-        "cloudkit", "passkit", "familycircled", "sharedfilelistd", "localizationswitcherd",
-    ]
-
-    /// Decide si una carpeta pertenece a algo que sigue instalado.
-    func estaInstalado(carpeta: String) -> Bool {
-        let l = carpeta.lowercased()
-        if l.hasPrefix("com.apple.") || l.contains("group.com.apple.") || l.hasPrefix("apple") { return true }
-        let n = Self.normalizar((carpeta as NSString).deletingPathExtension)
-        if n.count < 3 || Self.ignorar.contains(n) || nombresExactos.contains(n) { return true }
-
-        if l.contains(".") && l.split(separator: ".").count >= 3 {
-            // Parece un identificador de app (com.empresa.app).
-            let id = Self.sinExtension(l)
-            if bundleIDs.contains(id) { return true }
-            // Mismo fabricante que una app instalada (com.microsoft.office con Word instalado): se respeta.
-            if fabricantes.contains(id.split(separator: ".").prefix(2).joined(separator: ".")) { return true }
-            for b in bundleIDs where id.hasPrefix(b + ".") || b.hasPrefix(id + ".") { return true }
-            let partes = id.split(separator: ".").map { Self.normalizar(String($0)) }
-            // com.empresa.app: coincide si «app» es una app instalada.
-            if let ultima = partes.last, ultima.count >= 4, nombres.contains(ultima) { return true }
-            return false
-        }
-
-        for nombre in nombres where nombre.count >= 4 {
-            if nombre == n { return true }
-            // «BraveSoftware» empieza por «brave»; «AndroidStudio» contiene «android».
-            if n.count >= 4 && (nombre.contains(n) || n.hasPrefix(nombre)) { return true }
-        }
-        return nombres.contains(n)
-    }
-
-    /// Nombre visible de la app a la que pertenece una carpeta («com.brave.Browser» → «Brave Browser»).
-    func nombreApp(para carpeta: String) -> String? {
-        let l = Self.sinExtension(carpeta.lowercased())
-        if let n = nombrePorID[l] { return n }
-        for (id, n) in nombrePorID where l.hasPrefix(id + ".") || id.hasPrefix(l + ".") { return n }
-        let n = Self.normalizar(carpeta)
-        if let v = nombrePorNombre[n] { return v }
-        if n.count >= 4 {
-            for (k, v) in nombrePorNombre where k.count >= 4 && (k.hasPrefix(n) || n.hasPrefix(k)) { return v }
-        }
-        return nil
-    }
-
-    /// ¿Existe un comando con un nombre parecido al de la carpeta oculta?
-    func comandoPara(carpetaOculta: String) -> String? {
-        let n = Self.normalizar(carpetaOculta)
-        guard n.count >= 3 else { return nil }
-        if comandos.contains(n) { return n }
-        let base = Self.normalizar(String(carpetaOculta.dropFirst().split(separator: "-").first ?? ""))
-        if base.count >= 3, comandos.contains(base) { return base }
-        return nil
-    }
-
-    private static func sinExtension(_ s: String) -> String {
-        for ext in [".plist", ".savedstate", ".binarycookies"] where s.hasSuffix(ext) { return String(s.dropLast(ext.count)) }
-        return s
     }
 }
 
@@ -398,9 +272,11 @@ struct Procesos {
     }
 
     /// Nombre de la app (o servicio) abierta que coincide con alguna clave.
+    /// Las claves de carpetas compartidas («group.com.x.y», «EQUIPO.x») se comparan sin ese prefijo.
     func appAbierta(_ claves: [String]) -> String? {
-        let ids = claves.map { $0.lowercased() }.filter { $0.contains(".") }
-        let nombres = claves.map(AppsInstaladas.normalizar).filter { $0.count >= 4 }
+        let todas = claves + claves.map(AppsInstaladas.sinPrefijoDeGrupo)
+        let ids = todas.map { $0.lowercased() }.filter { $0.contains(".") }
+        let nombres = todas.map(AppsInstaladas.normalizar).filter { $0.count >= 4 }
         for a in apps {
             if !a.bundleID.isEmpty {
                 for id in ids where a.bundleID == id || a.bundleID.hasPrefix(id + ".") || id.hasPrefix(a.bundleID + ".") {
@@ -415,6 +291,36 @@ struct Procesos {
             if nombres.contains(where: { prog.hasPrefix($0) }) { return prog }
         }
         return nil
+    }
+}
+
+/// Archivos que los programas tienen abiertos ahora mismo (según `lsof`).
+struct ArchivosAbiertos {
+    var rutas: [String] = []
+    /// `false` si no se pudo saber: entonces no se ofrece nada que dependa de esto.
+    var disponible = false
+
+    static func capturar() -> ArchivosAbiertos {
+        var r = ArchivosAbiertos()
+        let salida = Shell.ejecutar("/usr/sbin/lsof", ["-n", "-P", "-w", "-F", "n", "-u", String(getuid())], limite: 40).salida
+        for linea in salida.split(separator: "\n") where linea.first == "n" {
+            var ruta = String(linea.dropFirst())
+            guard ruta.hasPrefix("/") else { continue }
+            if ruta.hasPrefix("/private/var/") || ruta.hasPrefix("/private/tmp/") { ruta = String(ruta.dropFirst(8)) }
+            r.rutas.append(ruta)
+        }
+        r.disponible = !r.rutas.isEmpty
+        return r
+    }
+
+    /// Nombres de lo que hay directamente dentro de `carpeta` y algún programa tiene abierto (o dentro).
+    func hijosEnUso(de carpeta: String) -> Set<String> {
+        let prefijo = carpeta + "/"
+        var r = Set<String>()
+        for ruta in rutas where ruta.hasPrefix(prefijo) {
+            if let primero = ruta.dropFirst(prefijo.count).split(separator: "/").first { r.insert(String(primero)) }
+        }
+        return r
     }
 }
 

@@ -33,6 +33,8 @@ final class Almacen: ObservableObject {
     @Published private(set) var totalesSeleccionados: [Categoria: Int64] = [:]
     @Published private(set) var totalEncontrado: Int64 = 0
     @Published private(set) var duracionAnalisis: TimeInterval = 0
+    /// Modelo, chip, memoria e instantáneas de Time Machine (se lee una vez, en segundo plano).
+    @Published private(set) var mac: InfoMac?
 
     // MARK: Análisis
 
@@ -109,7 +111,7 @@ final class Almacen: ObservableObject {
         let rutas = Set(seleccionados.filter { $0.accion == .borrar }.flatMap { $0.rutas.map(\.path) })
         efectivos = seleccionados.filter { el in
             guard el.accion == .borrar else { return true }
-            return el.rutas.contains { !Self.dentroDe($0.path, rutas) }
+            return el.rutas.contains { !Rutas.estaDentro($0.path, de: rutas) }
         }
     }
 
@@ -127,21 +129,11 @@ final class Almacen: ObservableObject {
         }
         pares.sort { $0.0.count < $1.0.count }
         var contadas = Set<String>()
-        for (ruta, bytes) in pares where !contadas.contains(ruta) && !dentroDe(ruta, contadas) {
+        for (ruta, bytes) in pares where !contadas.contains(ruta) && !Rutas.estaDentro(ruta, de: contadas) {
             contadas.insert(ruta)
             total += bytes
         }
         return total
-    }
-
-    /// ¿Alguna carpeta superior de `ruta` está en el conjunto?
-    private static func dentroDe(_ ruta: String, _ conjunto: Set<String>) -> Bool {
-        var actual = Substring(ruta)
-        while let barra = actual.lastIndex(of: "/"), barra > actual.startIndex {
-            actual = actual[..<barra]
-            if conjunto.contains(String(actual)) { return true }
-        }
-        return false
     }
 
     // MARK: Selección
@@ -191,14 +183,11 @@ final class Almacen: ObservableObject {
             }
             let papelera = Limpiador.tamanoPapelera()
             await MainActor.run {
-                let limpiados = Set(aLimpiar.map(\.id))
-                let omitidos = Set(r.omitidos)
                 // Quita de la lista lo que se limpió (lo omitido o fallido sigue apareciendo).
                 self.elementos.removeAll { el in
-                    guard !omitidos.contains(where: { $0.hasPrefix(el.nombre + ":") }) else { return false }
-                    return el.accion == .borrar
-                        ? !el.rutas.contains(where: Rutas.existe)
-                        : limpiados.contains(el.id)
+                    el.accion == .borrar
+                        ? !el.rutas.contains(where: { Rutas.existeSinSeguir($0.path) })
+                        : r.hechos.contains(el.id)
                 }
                 self.resultado = r
                 self.limpiando = false
@@ -219,7 +208,8 @@ final class Almacen: ObservableObject {
             let papelera = Limpiador.tamanoPapelera()
             await MainActor.run {
                 self.limpiando = false
-                self.ultimaLimpieza = nil
+                // Si quedaba algo de una limpieza anterior, ahora es esa la que se puede deshacer.
+                self.ultimaLimpieza = Historial.cargarUltima()
                 self.tamanoPapelera = papelera
                 self.disco = InfoDisco.actual()
                 var texto = "Devolví \(r.restaurados) \(r.restaurados == 1 ? "elemento" : "elementos") a su sitio (\(Formato.bytes(r.bytes)))."
@@ -243,7 +233,7 @@ final class Almacen: ObservableObject {
                 self.limpiando = false
                 self.disco = InfoDisco.actual()
                 self.tamanoPapelera = papelera
-                self.ultimaLimpieza = nil
+                self.ultimaLimpieza = Historial.cargarUltima()
                 self.elementos.removeAll { $0.accion == .vaciarPapelera }
                 self.resultado = ResultadoLimpieza(
                     elementosLimpiados: 1, bytesLimpiados: max(0, despues - antes), libreAntes: antes,
@@ -258,9 +248,14 @@ final class Almacen: ObservableObject {
         disco = InfoDisco.actual()
         accesoTotal = Seguridad.tieneAccesoTotal()
         ultimaLimpieza = Historial.cargarUltima()
+        let leerMac = mac == nil
         Task.detached {
             let p = Limpiador.tamanoPapelera()
-            await MainActor.run { self.tamanoPapelera = p }
+            let m = leerMac ? InfoMac.actual() : nil
+            await MainActor.run {
+                self.tamanoPapelera = p
+                if let m { self.mac = m }
+            }
         }
     }
 

@@ -13,6 +13,8 @@ enum Zona: UInt8 {
     case library
     /// /Users/Shared
     case compartida
+    /// Temporales y cachés de tu usuario en /var/folders
+    case sistema
 }
 
 enum TipoSensible: UInt8 {
@@ -102,6 +104,8 @@ final class Indice: @unchecked Sendable {
     fileprivate(set) var apps: [String] = []
     fileprivate(set) var cachesInternas: [(ruta: String, tipo: TipoCacheInterna)] = []
     fileprivate(set) var wrappersGradle: [String] = []
+    /// build.gradle(.kts) y libs.versions.toml: dicen qué SDK, build-tools y NDK usa cada proyecto.
+    fileprivate(set) var archivosGradle: [String] = []
     fileprivate(set) var archivosTotales = 0
     fileprivate(set) var bytesTotales: Int64 = 0
     fileprivate(set) var sinPermiso = 0
@@ -184,11 +188,20 @@ final class Indice: @unchecked Sendable {
         var ruta: String
     }
 
-    static func construir(accesoTotal: Bool, progreso: (Progreso) -> Void) -> Indice {
+    /// Además de la carpeta personal: la carpeta compartida y las carpetas de sistema de tu usuario.
+    static func raicesExtra() -> [(ruta: String, zona: Zona)] {
+        var r: [(ruta: String, zona: Zona)] = [("/Users/Shared", .compartida)]
+        if let t = Sistema.temporal { r.append((t, .sistema)) }
+        if let c = Sistema.caches { r.append((c, .sistema)) }
+        return r.filter { Rutas.esCarpeta(URL(fileURLWithPath: $0.ruta)) }
+    }
+
+    static func construir(accesoTotal: Bool, home: String = Rutas.home.path,
+                          extras: [(ruta: String, zona: Zona)] = Indice.raicesExtra(),
+                          progreso: (Progreso) -> Void) -> Indice {
         let inicio = Date()
         let indice = Indice()
         let marcador = Marcador()
-        let home = Rutas.home.path
         let omitir = rutasOmitidas(home: home, accesoTotal: accesoTotal)
         let candado = NSLock()
 
@@ -202,13 +215,17 @@ final class Indice: @unchecked Sendable {
             cortar: { ruta, nivel in nivel >= (ruta.hasPrefix(libraryPrefijo) ? 3 : 2) },
             alCortar: { unidades.append($0) })
         indice.absorber(superficial)
-        if Rutas.existe(URL(fileURLWithPath: "/Users/Shared")) {
-            unidades.append(Unidad(ruta: "/Users/Shared", contexto: Acumulador(zona: .compartida)))
+        for e in extras where !e.ruta.hasPrefix(home + "/") {
+            unidades.append(Unidad(ruta: e.ruta, contexto: Acumulador(zona: e.zona)))
         }
 
         // 2. Unidades en paralelo.
+        final class Resultados: @unchecked Sendable {
+            var lista: [Acumulador?]
+            init(_ n: Int) { lista = [Acumulador?](repeating: nil, count: n) }
+        }
         let lista = unidades
-        var resultados = [Acumulador?](repeating: nil, count: unidades.count)
+        let resultados = Resultados(unidades.count)
         let grupo = DispatchGroup()
         DispatchQueue.global(qos: .userInitiated).async(group: grupo) {
             DispatchQueue.concurrentPerform(iterations: lista.count) { i in
@@ -217,7 +234,7 @@ final class Indice: @unchecked Sendable {
                 let a = r.recorrer(raiz: lista[i].ruta, contexto: lista[i].contexto, umbral: 1_000_000,
                                    cortar: nil, alCortar: nil)
                 candado.lock()
-                resultados[i] = a
+                resultados.lista[i] = a
                 indice.absorber(r)
                 candado.unlock()
             }
@@ -229,7 +246,7 @@ final class Indice: @unchecked Sendable {
 
         // 3. Sumar cada unidad a sus carpetas superiores.
         for (i, u) in unidades.enumerated() {
-            guard let a = resultados[i] else { continue }
+            guard let a = resultados.lista[i] else { continue }
             indice.carpetas[u.ruta] = a.info
             guard u.ruta.hasPrefix(home + "/") else { continue }
             var p = (u.ruta as NSString).deletingLastPathComponent
@@ -249,8 +266,9 @@ final class Indice: @unchecked Sendable {
 
         let m = marcador.leer()
         indice.archivosTotales = m.0
-        indice.bytesTotales = (indice.carpetas[home]?.bytes ?? 0) + (indice.carpetas["/Users/Shared"]?.bytes ?? 0)
-        indice.raices = [home, "/Users/Shared"]
+        indice.bytesTotales = (indice.carpetas[home]?.bytes ?? 0)
+            + extras.reduce(Int64(0)) { $0 + (indice.carpetas[$1.ruta]?.bytes ?? 0) }
+        indice.raices = [home] + extras.map(\.ruta)
         indice.duracion = Date().timeIntervalSince(inicio)
         progreso(Progreso(archivos: m.0, bytes: indice.bytesTotales, ruta: ""))
         return indice
@@ -270,6 +288,7 @@ final class Indice: @unchecked Sendable {
         apps += r.apps
         cachesInternas += r.cachesInternas
         wrappersGradle += r.wrappersGradle
+        archivosGradle += r.archivosGradle
         sinPermiso += r.sinPermiso
     }
 
@@ -383,6 +402,7 @@ fileprivate final class Recorrido {
     var apps: [String] = []
     var cachesInternas: [(ruta: String, tipo: TipoCacheInterna)] = []
     var wrappersGradle: [String] = []
+    var archivosGradle: [String] = []
     var sinPermiso = 0
 
     private let marcador: Marcador
@@ -581,6 +601,10 @@ fileprivate final class Recorrido {
         case "node_modules": return .node
         case "Pods": return hay("Podfile") ? .pods : nil
         case "build":
+            // En electron-builder, build/ guarda íconos y entitlements hechos a mano: no es compilación.
+            let recursos = ["icon.icns", "icon.ico", "icon.png", "entitlements.mac.plist", "entitlements.plist",
+                            "background.png", "installer.nsh"]
+            if recursos.contains(where: { access(ruta + "/" + $0, F_OK) == 0 }) { return nil }
             return gradle() || hay("pubspec.yaml") || hay("CMakeLists.txt") || hay("package.json") ? .compilacion : nil
         case ".gradle": return gradle() || hay("gradlew") ? .gradle : nil
         case ".cxx": return gradle() ? .cxx : nil
@@ -649,6 +673,9 @@ fileprivate final class Recorrido {
             if tamano >= 1_000_000 { a.contenido.audio += 1 }
         case .codigo:
             a.contenido.codigo += 1
+            if clave == extKTS && largoNombre == 16 && String(cString: nombre) == "build.gradle.kts" {
+                archivosGradle.append(String(cString: e.pointee.fts_path))
+            }
         case .base:
             a.contenido.bases += 1
         case .clave:
@@ -720,6 +747,12 @@ fileprivate final class Recorrido {
             if ["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"].contains(n) {
                 sensibles.append(ArchivoSensible(ruta: String(cString: e.pointee.fts_path), tipo: .llaveSSH, zona: zona))
             }
+        } else if (largo == 12 && nombre[0] == 98 /* b */) || (largo == 18 && nombre[0] == 108 /* l */) {
+            // build.gradle y libs.versions.toml: qué versiones del SDK de Android usa cada proyecto.
+            let n = String(cString: nombre)
+            if n == "build.gradle" || n == "libs.versions.toml" {
+                archivosGradle.append(String(cString: e.pointee.fts_path))
+            }
         }
     }
 
@@ -773,6 +806,7 @@ fileprivate let extIPA = claveDe("ipa")
 fileprivate let extKEY = claveDe("key")
 fileprivate let extJKS = claveDe("jks")
 fileprivate let extKEYSTORE = claveDe("keystore")
+fileprivate let extKTS = claveDe("kts")
 
 fileprivate let tablaExtensiones: [UInt64: TipoArchivo] = {
     var t: [UInt64: TipoArchivo] = [:]
@@ -786,7 +820,7 @@ fileprivate let tablaExtensiones: [UInt64: TipoArchivo] = {
     agregar(.codigo, "swift kt kts java js jsx ts tsx py rb go rs c cc cpp h hpp m mm cs php dart vue svelte scala")
     agregar(.base, "sqlite sqlite3 db realm sqlitedb")
     agregar(.clave, "jks keystore p12 pfx p8 mobileprovision provisionprofile pem key")
-    agregar(.instalador, "dmg pkg mpkg iso xip apk xapk ipa aab")
+    agregar(.instalador, "dmg pkg mpkg iso xip apk xapk ipa aab ipsw")
     agregar(.comprimido, "zip rar 7z tar gz tgz bz2 xz zst")
     agregar(.json, "json")
     agregar(.plist, "plist")
