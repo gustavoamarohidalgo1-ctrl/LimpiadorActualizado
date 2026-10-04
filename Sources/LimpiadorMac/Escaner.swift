@@ -986,6 +986,8 @@ struct Escaner {
                 // TemporaryItems guarda documentos a medio guardar: nunca se toca.
                 guard !n.hasPrefix("."), n != "TemporaryItems", !enUso.contains(n),
                       c.procesos.appAbierta([n]) == nil else { continue }
+                // De una carpeta pequeña el índice no guarda la actividad de lo de dentro: no se puede saber si se usa.
+                if Rutas.esCarpeta(h) && c.indice.info(h.path) == nil { continue }
                 let ultimo = c.indice.masReciente(de: [h]) ?? Fechas.modificacion(h) ?? ahora
                 guard ahora.timeIntervalSince(ultimo) > 3 * 86400 else { continue }
                 viejos.append(h)
