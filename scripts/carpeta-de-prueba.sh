@@ -68,6 +68,40 @@ archivo "Library/Application Support/Code/CachedData/bbbb2222/cache.bin" 2
 # Firmware de iPhone ya descargado.
 archivo "Library/iTunes/iPhone Software Updates/iPhone_Restore.ipsw" 2
 
+# Proyectos de otros lenguajes y motores (artefactos del catálogo).
+mkdir -p "Proyectos/Juego/ProjectSettings" "Proyectos/Api" "Proyectos/py"
+echo "m_EditorVersion: 2022.3.10f1" > "Proyectos/Juego/ProjectSettings/ProjectVersion.txt"
+archivo "Proyectos/Juego/Library/ArtifactDB" 2
+echo "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>" > "Proyectos/Api/Api.csproj"
+archivo "Proyectos/Api/bin/Debug/Api.dll" 2
+archivo "Proyectos/Api/obj/project.assets.json" 2
+echo "print('hola')" > "Proyectos/py/app.py"
+archivo "Proyectos/py/__pycache__/app.cpython-312.pyc" 2
+
+# Descargas a medias y actualizaciones de apps ya descargadas.
+archivo "Downloads/pelicula.mp4.crdownload" 2
+viejo "Downloads/pelicula.mp4.crdownload"
+archivo "Library/Application Support/Caches/miapp-updater/pending/MiApp-2.0.zip" 2
+viejo "Library/Application Support/Caches/miapp-updater/pending/MiApp-2.0.zip" \
+      "Library/Application Support/Caches/miapp-updater/pending" "Library/Application Support/Caches/miapp-updater"
+archivo ".cargo/git/db/serde-1234/objeto" 2
+
+# Copias de seguridad de iPhone: una actual y una archivada del mismo dispositivo.
+for copia in "00008110-0011223344556677" "00008110-0011223344556677-20240101-120000"; do
+  mkdir -p "Library/Application Support/MobileSync/Backup/$copia"
+  if [ "$copia" = "00008110-0011223344556677" ]; then fecha="2026-09-01T10:00:00Z"; else fecha="2024-01-01T12:00:00Z"; fi
+  cat > "Library/Application Support/MobileSync/Backup/$copia/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Device Name</key><string>iPhone de prueba</string>
+<key>Unique Identifier</key><string>00008110-0011223344556677</string>
+<key>Last Backup Date</key><date>$fecha</date>
+</dict></plist>
+PLIST
+  archivo "Library/Application Support/MobileSync/Backup/$copia/datos.bin" 2
+done
+
 # Algo en la Papelera.
 archivo ".Trash/viejo.zip" 2
 

@@ -64,7 +64,11 @@ extension Escaner {
 
     /// Las rutas que cubre una regla, según su modo.
     static func aplicar(_ regla: Regla, _ c: Contexto) -> [URL] {
-        let base = expandir(regla.patron).filter { !esEnlace($0.path) }
+        let base = expandir(regla.patron).filter { u in
+            !esEnlace(u.path) && !regla.exclusiones.contains { patron in
+                u.pathComponents.contains { fnmatch(patron, $0, 0) == 0 }
+            }
+        }
         var rutas: [URL] = []
         switch regla.modo {
         case .carpeta:

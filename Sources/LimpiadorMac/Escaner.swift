@@ -54,7 +54,7 @@ struct Escaner {
                 Evaluador.evaluar(&elementos[j], c)
                 elementos[j].recomendado = elementos[j].seleccionado
             }
-            elementos = elementos.filter { $0.tamano >= minimo }.sorted { $0.tamano > $1.tamano }
+            elementos = elementos.filter { $0.tamano >= minimo || $0.sinMinimo }.sorted { $0.tamano > $1.tamano }
             ofrecidas += elementos.flatMap { $0.rutas.map(\.path) }
             entrega(elementos)
         }
@@ -70,7 +70,7 @@ struct Escaner {
         case .desarrollo: elementos = desarrollo(c)
         case .cachesApps: elementos = cachesApps(c)
         case .temporales: elementos = temporales(c)
-        case .sistema: elementos = []
+        case .sistema: elementos = restosDelSistema()
         case .restos: elementos = restos(c)
         case .proyectos: elementos = proyectos(c)
         case .herramientas: elementos = herramientas(c)
@@ -983,6 +983,38 @@ struct Escaner {
         return r
     }
 
+    // MARK: - Restos de apps en el sistema
+
+    /// Agentes y demonios de inicio de apps que ya no existen, y ayudantes privilegiados que nadie usa.
+    private func restosDelSistema() -> [Elemento] {
+        var r: [Elemento] = []
+        for plist in Huerfanos.agentes() {
+            let info = Huerfanos.programa(de: plist)
+            let etiqueta = info?.etiqueta ?? plist.deletingPathExtension().lastPathComponent
+            let programa = info?.programa.map { Formato.rutaCorta($0) } ?? "un programa"
+            let esDemonio = plist.path.hasPrefix("/Library/LaunchDaemons/")
+            r.append(Elemento(
+                nombre: "\(esDemonio ? "Demonio" : "Agente") de inicio huérfano: \(etiqueta)",
+                detalle: "macOS intenta abrir \(programa) en cada arranque, pero ese programa ya no existe (era de una app desinstalada).",
+                consecuencia: "Nada: el programa ya no está. macOS deja de intentar abrirlo al arrancar.",
+                rutas: [plist], categoria: .sistema, riesgo: .revisar, accion: .borrarComoAdmin,
+                motivos: [.bien("power", "Programa inexistente", "El archivo que lanza (\(programa)) ya no está en el disco."),
+                          .info("lock.fill", "Pide contraseña", "Es del sistema: para borrarlo te pediré la contraseña de administrador.")],
+                sinMinimo: true))
+        }
+        for ayudante in Huerfanos.ayudantes() {
+            r.append(Elemento(
+                nombre: "Ayudante privilegiado sin usar: \(ayudante.lastPathComponent)",
+                detalle: "Un programa con permisos de administrador que instaló una app; ningún demonio de inicio lo usa ya.",
+                consecuencia: "Si la app que lo instaló sigue en uso, te volverá a pedir permiso para instalarlo.",
+                rutas: [ayudante], categoria: .sistema, riesgo: .revisar, accion: .borrarComoAdmin,
+                motivos: [.info("person.badge.shield.checkmark.fill", "Sin demonio", "Ningún demonio ni agente de inicio lo lanza."),
+                          .info("lock.fill", "Pide contraseña", "Es del sistema: para borrarlo te pediré la contraseña de administrador.")],
+                sinMinimo: true))
+        }
+        return r
+    }
+
     // MARK: - Temporales del sistema (/var/folders)
 
     /// Temporales y cachés que macOS guarda para tu usuario fuera de la carpeta personal.
@@ -1854,15 +1886,38 @@ struct Escaner {
         }
 
         // Copias de seguridad de iPhone/iPad (solo se ven con Acceso total al disco).
+        // Las copias archivadas del mismo dispositivo («UDID-20240101-120000») sobran si hay una más reciente.
+        var porDispositivo: [String: [(url: URL, nombre: String, fecha: Date?)]] = [:]
         for b in Rutas.hijos(Rutas.enHome("Library/Application Support/MobileSync/Backup")) where Rutas.esCarpeta(b) {
             let info = NSDictionary(contentsOf: b.appendingPathComponent("Info.plist"))
             let nombre = info?["Device Name"] as? String ?? "iPhone/iPad"
-            r.append(Elemento(
-                nombre: "Copia de seguridad de \(nombre)",
-                detalle: "Copia local completa de un dispositivo.",
-                consecuencia: "Si pierdes o cambias el dispositivo, no podrás restaurarlo desde esta copia.",
-                rutas: [b], ultimoUso: info?["Last Backup Date"] as? Date, categoria: .grandes, riesgo: .cuidado,
-                motivos: [.aviso("iphone", "Copia de seguridad", "Bórrala solo si ya tienes otra copia (por ejemplo, en iCloud).")]))
+            let id = (info?["Unique Identifier"] as? String)?.lowercased()
+                ?? String(b.lastPathComponent.split(separator: "-").first ?? Substring(b.lastPathComponent)).lowercased()
+            porDispositivo[id, default: []].append((b, nombre, info?["Last Backup Date"] as? Date))
+        }
+        for copias in porDispositivo.values {
+            let orden = copias.sorted { ($0.fecha ?? .distantPast) > ($1.fecha ?? .distantPast) }
+            for (i, copia) in orden.enumerated() {
+                let masReciente = i == 0
+                var motivos: [Motivo] = []
+                if masReciente {
+                    motivos.append(.aviso("iphone", "Copia de seguridad", "Bórrala solo si ya tienes otra copia (por ejemplo, en iCloud)."))
+                    if let fecha = copia.fecha, Date().timeIntervalSince(fecha) > 365 * 86400 {
+                        motivos.append(.info("calendar.badge.exclamationmark", "Muy antigua",
+                                             "Es de \(Formato.haceCuanto(fecha).lowercased()): si todavía tienes el dispositivo, seguramente ya no sirve para restaurarlo tal como está."))
+                    }
+                } else {
+                    motivos.append(.info("square.stack.3d.down.right.fill", "Hay una más reciente",
+                                         "Es una copia archivada: tienes otra de \(copia.nombre) más reciente\(orden[0].fecha.map { " (\(Formato.haceCuanto($0).lowercased()))" } ?? "")."))
+                }
+                r.append(Elemento(
+                    nombre: masReciente ? "Copia de seguridad de \(copia.nombre)" : "Copia archivada de \(copia.nombre)",
+                    detalle: masReciente ? "Copia local completa de un dispositivo." : "Una copia anterior de un dispositivo que tiene otra más reciente.",
+                    consecuencia: masReciente ? "Si pierdes o cambias el dispositivo, no podrás restaurarlo desde esta copia."
+                                              : "Ya no podrás volver a ese momento anterior del dispositivo; la copia más reciente se conserva.",
+                    rutas: [copia.url], ultimoUso: copia.fecha, categoria: .grandes,
+                    riesgo: masReciente ? .cuidado : .revisar, motivos: motivos))
+            }
         }
         return r
     }

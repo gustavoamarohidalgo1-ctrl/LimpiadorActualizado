@@ -52,6 +52,8 @@ struct Regla {
     private(set) var soloSiInstalada = false
     /// Se deja fuera lo que algún programa tiene abierto ahora mismo (según `lsof`).
     private(set) var siNadaLoTieneAbierto = false
+    /// Nombres que nunca se ofrecen aunque coincidan con el patrón (por ejemplo, «com.apple.*»).
+    private(set) var exclusiones: [String] = []
 
     init(_ id: String, _ patron: String, nombre: String, detalle: String, consecuencia: String) {
         self.id = id
@@ -99,6 +101,9 @@ struct Regla {
 
     /// En modo carpeta con comodines: conservar una de las coincidencias («discord/0.0.*» → la versión más alta).
     func conservando(_ c: Conservar) -> Regla { var r = self; r.conservar = c; return r }
+
+    /// Deja fuera las rutas en las que alguna carpeta se llama así (admite `*`: «com.apple.*»).
+    func excepto(_ nombres: String...) -> Regla { var r = self; r.exclusiones += nombres; return r }
 }
 
 /// Una carpeta regenerable dentro de un proyecto (por ejemplo, la «Library» de un proyecto de Unity).

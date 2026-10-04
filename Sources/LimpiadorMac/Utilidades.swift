@@ -188,6 +188,8 @@ enum Seguridad {
     /// y nunca nada del propio macOS, de otros usuarios ni de la carpeta personal.
     static func sePuedeBorrarComoAdmin(_ url: URL) -> Bool {
         let p = normalizada(url.path)
+        // Restos de apps en el sistema: se vuelve a comprobar que sigan siendo huérfanos.
+        if Huerfanos.esAgenteHuerfano(p) || Huerfanos.esAyudanteHuerfano(p) { return true }
         guard !esZonaProhibida(p), !p.hasPrefix("/Users/") else { return false }
         if url.pathExtension.lowercased() == "jks" || url.pathExtension.lowercased() == "keystore" { return false }
         return Catalogo.cubre(p, admin: true)

@@ -278,6 +278,8 @@ struct Elemento: Identifiable, Hashable {
     var contenido = Contenido()
     /// Duplicados: la copia que se conserva. Si también se va a borrar (o ya no existe), esta no se toca.
     var conservar: String? = nil
+    /// Se ofrece aunque ocupe menos de 1 MB (restos que molestan aunque pesen poco).
+    var sinMinimo = false
 
     var rutaPrincipal: URL { rutas[0] }
 

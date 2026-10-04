@@ -111,3 +111,18 @@ final class ReglasTests: XCTestCase {
         XCTAssertFalse(AccionLimpieza.eliminarRuntime(id: "x").sePuedeDeshacer)
     }
 }
+
+final class HuerfanosTests: XCTestCase {
+    /// Solo cuentan los plist de las carpetas de launchd del sistema que no son de Apple.
+    func testSoloCarpetasDeLaunchd() {
+        XCTAssertFalse(Huerfanos.esAgenteHuerfano("/Users/Shared/algo.plist"))
+        XCTAssertFalse(Huerfanos.esAgenteHuerfano("/Library/LaunchDaemons/com.apple.algo.plist"))
+        XCTAssertFalse(Huerfanos.esAyudanteHuerfano("/Library/PrivilegedHelperTools/com.apple.algo"))
+        XCTAssertFalse(Huerfanos.esAyudanteHuerfano("/usr/local/bin/algo"))
+        // Todo lo que se detecte como huérfano tiene que poder borrarse solo con contraseña y pasar la revisión de seguridad.
+        for u in Huerfanos.agentes() + Huerfanos.ayudantes() {
+            XCTAssertTrue(Seguridad.sePuedeBorrarComoAdmin(u), u.path)
+            XCTAssertFalse(Seguridad.sePuedeBorrar(u), u.path)
+        }
+    }
+}

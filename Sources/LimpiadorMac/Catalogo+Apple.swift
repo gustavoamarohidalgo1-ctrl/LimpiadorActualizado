@@ -43,5 +43,15 @@ extension Catalogo {
               detalle: "Programas gráficos que macOS compila para cada app y juego (Metal).",
               consecuencia: "Cada app los vuelve a compilar la próxima vez que la abras (los juegos pueden tardar un poco más en arrancar).")
             .en(.temporales).sinArchivosAbiertos(),
+        Regla("contenedores-temporales", "~/Library/Containers/*/Data/tmp",
+              nombre: "Temporales de apps de la App Store",
+              detalle: "Archivos temporales que las apps con sandbox (como las de la App Store) dejaron en su carpeta privada.",
+              consecuencia: "Nada: ninguna app los tiene abiertos y llevan días sin usarse.")
+            .en(.temporales).hijos().edad(dias: 3).sinArchivosAbiertos().accesoTotal().excepto("com.apple.*"),
+        Regla("grupos-caches", "~/Library/Group Containers/*/Library/Caches",
+              nombre: "Cachés compartidas de apps",
+              detalle: "Cachés que algunas apps guardan en su carpeta compartida (Group Containers).",
+              consecuencia: "Cada app las vuelve a crear cuando las necesita. Tus datos no se tocan.")
+            .sinPreseleccion().sinArchivosAbiertos().accesoTotal().excepto("group.com.apple.*", "*.com.apple.*", "com.apple.*"),
     ]
 }
