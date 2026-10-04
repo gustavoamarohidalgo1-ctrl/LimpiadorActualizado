@@ -352,7 +352,7 @@ enum Formato {
     static func rutaCorta(_ url: URL) -> String { rutaCorta(url.path) }
 
     static func rutaCorta(_ p: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let home = Rutas.home.path
         return p.hasPrefix(home) ? "~" + p.dropFirst(home.count) : p
     }
 

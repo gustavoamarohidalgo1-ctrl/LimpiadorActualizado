@@ -79,7 +79,13 @@ enum Fechas {
 }
 
 enum Rutas {
-    static let home = FileManager.default.homeDirectoryForCurrentUser
+    /// La carpeta personal. `LIMPIADORMAC_HOME` permite analizar una carpeta de prueba (tests y diagnóstico).
+    static let home: URL = {
+        if let prueba = ProcessInfo.processInfo.environment["LIMPIADORMAC_HOME"], !prueba.isEmpty {
+            return URL(fileURLWithPath: prueba, isDirectory: true).standardizedFileURL
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }()
     static func enHome(_ rel: String) -> URL { home.appendingPathComponent(rel) }
     static func existe(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
     static func existe(_ ruta: String) -> Bool { FileManager.default.fileExists(atPath: ruta) }

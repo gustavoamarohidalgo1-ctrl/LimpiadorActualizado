@@ -9,6 +9,11 @@ let package = Package(
         .executableTarget(
             name: "LimpiadorMac",
             path: "Sources/LimpiadorMac"
-        )
+        ),
+        .testTarget(
+            name: "LimpiadorMacTests",
+            dependencies: ["LimpiadorMac"],
+            path: "Tests/LimpiadorMacTests"
+        ),
     ]
 )

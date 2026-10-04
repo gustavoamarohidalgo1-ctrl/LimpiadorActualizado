@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versión de Swift
+        run: swift --version
+
+      - name: Compilar (release)
+        run: swift build -c release
+
+      - name: Tests
+        run: swift test
+
+      - name: Diagnóstico sobre una carpeta de prueba (no borra nada)
+        run: |
+          CASA="$RUNNER_TEMP/casa"
+          ./scripts/carpeta-de-prueba.sh "$CASA"
+          LIMPIADORMAC_HOME="$CASA" .build/release/LimpiadorMac --diagnostico --motivos
