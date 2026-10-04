@@ -105,7 +105,8 @@ enum Evaluador {
             let p = u.path.lowercased()
             return palabrasRespaldo.contains { p.contains("/\($0)") || p.contains("_\($0)") || p.contains("-\($0)") || p.contains(" \($0)") }
         }
-        if let respaldo, el.categoria != .emuladores {
+        // Las copias de iPhone ya explican su propio riesgo.
+        if let respaldo, el.categoria != .emuladores, !respaldo.path.contains("/MobileSync/Backup") {
             nuevos.append(.aviso("externaldrive.badge.timemachine", "Respaldo",
                 "Está dentro de una carpeta de respaldo (\(Formato.rutaCorta(respaldo.deletingLastPathComponent()))): puede ser la única copia de algo que guardaste a propósito."))
             riesgo = max(riesgo, .revisar)

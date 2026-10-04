@@ -132,6 +132,30 @@ final class CatalogoTests: XCTestCase {
         XCTAssertNil(Catalogo.artefacto(nombre: "cmake-build-debug", padre: raiz.appendingPathComponent("App").path))
     }
 
+    /// Un ejemplo de lo que ofrece cada regla tiene que pasar la misma revisión de seguridad que se hace al borrar:
+    /// si no, la regla apunta a algo protegido (o está mal escrita) y nunca debería estar en el catálogo.
+    func testCadaReglaPasaLaRevisionDeSeguridad() throws {
+        let personales = ["Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music"].map { Rutas.home.path + "/" + $0 + "/" }
+        for r in Catalogo.reglas {
+            var ejemplo = try XCTUnwrap(Escaner.absoluto(r.patron.replacingOccurrences(of: "*", with: "x")), r.id)
+            switch r.modo {
+            case .carpeta: break
+            case .hijos: ejemplo += "/x"
+            case .archivos(let extensiones): ejemplo += "/x." + (extensiones.first ?? "x")
+            }
+            let url = URL(fileURLWithPath: ejemplo)
+            if r.requiereAdmin {
+                XCTAssertTrue(Seguridad.sePuedeBorrarComoAdmin(url), "\(r.id): \(ejemplo)")
+                XCTAssertFalse(Seguridad.sePuedeBorrar(url), "\(r.id): \(ejemplo)")
+            } else {
+                XCTAssertTrue(Seguridad.sePuedeBorrar(url), "\(r.id): \(ejemplo)")
+            }
+            // Lo que está entre tus documentos, fotos, música o descargas nunca se marca solo.
+            if personales.contains(where: { ejemplo.hasPrefix($0) }) { XCTAssertFalse(r.preseleccionar, r.id) }
+            if r.categoria == .grandes { XCTAssertFalse(r.preseleccionar, r.id) }
+        }
+    }
+
     /// Ninguna regla apunta a algo demasiado amplio y lo del sistema nunca se marca solo.
     func testCatalogoBienFormado() {
         var ids = Set<String>()

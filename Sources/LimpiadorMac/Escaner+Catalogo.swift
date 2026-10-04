@@ -10,8 +10,11 @@ extension Escaner {
         for regla in Catalogo.reglas where regla.categoria == categoria {
             if regla.requiereAccesoTotal && !c.accesoTotal { continue }
             if regla.soloSiInstalada && !Self.instalada(regla, c) { continue }
+            // Ni lo que ya se ofreció, ni lo que está dentro, ni lo que lo contiene (se contaría dos veces).
             var rutas = Self.aplicar(regla, c).filter { u in
-                !vistas.contains(u.path) && !Rutas.estaDentro(u.path, de: vistas)
+                let prefijo = u.path + "/"
+                return !vistas.contains(u.path) && !Rutas.estaDentro(u.path, de: vistas)
+                    && !vistas.contains { $0.hasPrefix(prefijo) }
             }
             if regla.siNadaLoTieneAbierto && !rutas.isEmpty {
                 let abiertos = c.memoria.archivosAbiertos()
