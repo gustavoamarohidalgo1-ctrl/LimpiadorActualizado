@@ -22,6 +22,8 @@ enum Limpiador {
         var hechos = Set<UUID>()
         var forzados = 0
         var bytes: Int64 = 0
+        // Lo del sistema se borra todo junto al final, para pedir la contraseña una sola vez.
+        var delSistema: [Elemento] = []
 
         for (i, el) in elementos.enumerated() {
             progreso(Double(i) / Double(max(elementos.count, 1)), el.nombre)
@@ -36,6 +38,10 @@ enum Limpiador {
             if let original = el.conservar,
                !Rutas.existe(original) || aBorrar.contains(original) || Rutas.estaDentro(original, de: aBorrar) {
                 omitidos.append("\(el.nombre): es la última copia que queda (la de \(Formato.rutaCorta(Rutas.padre(original))) también se iba a borrar o ya no está).")
+                continue
+            }
+            if el.accion == .borrarComoAdmin {
+                delSistema.append(el)
                 continue
             }
             // Lo que no es 100 % seguro nunca se elimina sin pasar por la Papelera.
@@ -103,10 +109,37 @@ enum Limpiador {
                 ok = vaciar(papeleraAntes)
                 if ok { registro.append("papelera vaciada\t\(el.tamano)\t~/.Trash") }
                 else { errores.append("No se pudo vaciar toda la Papelera. Dale Acceso total al disco a LimpiadorMac.") }
+            case .borrarComoAdmin:
+                break   // se hace abajo, todo junto
             }
             if ok {
                 hechos.insert(el.id)
                 bytes += el.tamano
+            }
+        }
+
+        if !delSistema.isEmpty {
+            progreso(0.99, "Basura del sistema: macOS te pedirá la contraseña de administrador…")
+            // Se vuelve a comprobar cada ruta justo antes: solo lo que el catálogo permite y que no sea un enlace.
+            let rutas = delSistema.flatMap(\.rutas).filter { u in
+                Rutas.existeSinSeguir(u.path) && Seguridad.sePuedeBorrarComoAdmin(u) && !esEnlace(u.path)
+            }
+            let rechazadas = delSistema.flatMap(\.rutas).filter { Rutas.existeSinSeguir($0.path) && !rutas.contains($0) }
+            for u in rechazadas { errores.append("\(u.path): ruta del sistema no permitida, no se tocó.") }
+            if !rutas.isEmpty { Administrador.borrar(rutas.map(\.path)) }
+            var quedaron = 0
+            for el in delSistema {
+                let quedan = el.rutas.filter { Rutas.existeSinSeguir($0.path) }
+                for u in el.rutas where !quedan.contains(u) { registro.append("eliminado (administrador)\t0\t\(u.path)") }
+                if quedan.isEmpty {
+                    hechos.insert(el.id)
+                    bytes += el.tamano
+                } else {
+                    quedaron += 1
+                }
+            }
+            if quedaron > 0 {
+                errores.append("\(quedaron) \(quedaron == 1 ? "elemento del sistema no se borró" : "elementos del sistema no se borraron") del todo: cancelaste la contraseña o macOS los protege.")
             }
         }
         progreso(1, "Listo")
@@ -170,6 +203,33 @@ enum Limpiador {
 
     static func tamanoPapelera() -> Int64 {
         Tamanos.de(Rutas.enHome(".Trash"))
+    }
+
+    private static func esEnlace(_ ruta: String) -> Bool {
+        var st = stat()
+        return lstat(ruta, &st) == 0 && (st.st_mode & S_IFMT) == S_IFLNK
+    }
+}
+
+/// Borra rutas del sistema con permisos de administrador: macOS muestra su propia ventana para pedir la contraseña.
+/// Las rutas van escritas dentro de la orden (nunca en un archivo que otro programa pudiera cambiar).
+enum Administrador {
+    @discardableResult
+    static func borrar(_ rutas: [String]) -> Bool {
+        guard !rutas.isEmpty else { return true }
+        let orden = "/bin/rm -rf -- " + rutas.map(comillasShell).joined(separator: " ")
+        let script = "do shell script " + textoAppleScript(orden) + " with administrator privileges"
+        return Shell.ejecutar("/usr/bin/osascript", ["-e", script], limite: 900).estado == 0
+    }
+
+    /// Entre comillas simples para la terminal: «it's» → «'it'\''s'».
+    static func comillasShell(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Como texto de AppleScript, con barras y comillas escapadas.
+    static func textoAppleScript(_ s: String) -> String {
+        "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 }
 

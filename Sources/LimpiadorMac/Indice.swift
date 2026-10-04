@@ -32,6 +32,8 @@ struct ArchivoSensible: Hashable {
 /// Carpetas de proyectos que se regeneran solas.
 enum TipoArtefacto: UInt8 {
     case node, pods, compilacion, gradle, cxx, kotlin, web, expo, dart, xcode, swiftpm, cargo, venv
+    /// Una carpeta de la tabla `Catalogo.artefactos`.
+    case catalogo
 
     var descripcion: String {
         switch self {
@@ -48,6 +50,7 @@ enum TipoArtefacto: UInt8 {
         case .swiftpm: return "compilación de Swift"
         case .cargo: return "compilación de Rust/Java"
         case .venv: return "entorno virtual de Python"
+        case .catalogo: return "carpeta regenerable"
         }
     }
 }
@@ -55,6 +58,8 @@ enum TipoArtefacto: UInt8 {
 struct Artefacto: Hashable {
     let ruta: String
     let tipo: TipoArtefacto
+    /// Para `.catalogo`: el índice en `Catalogo.artefactos`.
+    var regla = -1
 }
 
 struct ArchivoIndexado: Hashable {
@@ -573,6 +578,13 @@ fileprivate final class Recorrido {
             let carpetaPadre = (ruta as NSString).deletingLastPathComponent
             if carpetaPadre != home, let tipo = Self.artefacto(nombre: nombre, ruta: ruta, padre: carpetaPadre) {
                 artefactos.append(Artefacto(ruta: ruta, tipo: tipo))
+                a.enArtefacto = true
+                a.clasificar = false
+                a.esArtefacto = true
+                return
+            }
+            if carpetaPadre != home, let i = Catalogo.artefacto(nombre: nombre, padre: carpetaPadre) {
+                artefactos.append(Artefacto(ruta: ruta, tipo: .catalogo, regla: i))
                 a.enArtefacto = true
                 a.clasificar = false
                 a.esArtefacto = true

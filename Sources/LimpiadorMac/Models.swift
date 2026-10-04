@@ -137,6 +137,7 @@ enum Categoria: String, CaseIterable, Identifiable, Hashable {
     case desarrollo
     case cachesApps
     case temporales
+    case sistema
     case restos
     case proyectos
     case herramientas
@@ -154,6 +155,7 @@ enum Categoria: String, CaseIterable, Identifiable, Hashable {
         case .desarrollo: return "Cachés de desarrollo"
         case .cachesApps: return "Cachés de aplicaciones"
         case .temporales: return "Temporales del sistema"
+        case .sistema: return "Basura del sistema"
         case .restos: return "Restos de apps borradas"
         case .proyectos: return "Compilaciones"
         case .herramientas: return "Carpetas ocultas"
@@ -175,6 +177,8 @@ enum Categoria: String, CaseIterable, Identifiable, Hashable {
             return "Archivos temporales de navegadores y apps, incluidas las cachés internas que guardan junto a sus datos."
         case .temporales:
             return "Temporales y cachés que macOS guarda para tu usuario fuera de tu carpeta (/var/folders). Solo lo que ningún programa tiene abierto."
+        case .sistema:
+            return "Cachés, registros y descargas de macOS y de apps fuera de tu carpeta. Para borrarlos te pediré la contraseña de administrador."
         case .restos:
             return "Lo que dejaron las apps que ya no están instaladas, agrupado por app: datos, cachés, registros y agentes de inicio."
         case .proyectos:
@@ -200,6 +204,7 @@ enum Categoria: String, CaseIterable, Identifiable, Hashable {
         case .desarrollo: return "hammer.fill"
         case .cachesApps: return "square.stack.3d.up.fill"
         case .temporales: return "gearshape.2.fill"
+        case .sistema: return "lock.shield.fill"
         case .restos: return "puzzlepiece.extension.fill"
         case .proyectos: return "shippingbox.fill"
         case .herramientas: return "eye.slash.fill"
@@ -224,6 +229,8 @@ enum AccionLimpieza: Hashable {
     case eliminarRuntime(id: String)
     /// Vacía la Papelera del usuario.
     case vaciarPapelera
+    /// Borra rutas del sistema (de root) con la contraseña de administrador. No pasa por la Papelera.
+    case borrarComoAdmin
 
     /// Solo borrar rutas pasa por la Papelera. Vaciar un simulador, eliminar un sistema iOS
     /// o vaciar la Papelera no se puede deshacer, elijas el modo que elijas.
@@ -236,6 +243,7 @@ enum AccionLimpieza: Hashable {
         case .vaciarSimulador: return "se borra el contenido del simulador"
         case .eliminarRuntime: return "se elimina el sistema iOS"
         case .vaciarPapelera: return "se vacía la Papelera"
+        case .borrarComoAdmin: return "se borra con la contraseña de administrador"
         }
     }
 }

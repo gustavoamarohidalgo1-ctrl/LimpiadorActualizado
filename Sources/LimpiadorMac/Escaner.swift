@@ -14,7 +14,7 @@ struct Escaner {
     typealias Entrega = @Sendable ([Elemento]) -> Void
 
     /// Orden de análisis. «Archivos grandes» va al final para no repetir lo que ya ofrecieron otras categorías.
-    static let orden: [Categoria] = [.emuladores, .desarrollo, .cachesApps, .temporales, .restos, .proyectos,
+    static let orden: [Categoria] = [.emuladores, .desarrollo, .cachesApps, .temporales, .sistema, .restos, .proyectos,
                                      .herramientas, .instaladores, .registros, .papelera, .duplicados, .grandes]
     static let fases: [String] = ["Apps abiertas", "Índice del disco", "Apps instaladas"] + orden.map(\.titulo)
 
@@ -64,12 +64,13 @@ struct Escaner {
     }
 
     private func generar(_ categoria: Categoria, _ c: Contexto, ofrecidas: [String]) -> [Elemento] {
-        let elementos: [Elemento]
+        var elementos: [Elemento]
         switch categoria {
         case .emuladores: elementos = emuladores(c)
         case .desarrollo: elementos = desarrollo(c)
         case .cachesApps: elementos = cachesApps(c)
         case .temporales: elementos = temporales(c)
+        case .sistema: elementos = []
         case .restos: elementos = restos(c)
         case .proyectos: elementos = proyectos(c)
         case .herramientas: elementos = herramientas(c)
@@ -79,11 +80,17 @@ struct Escaner {
         case .duplicados: elementos = duplicados(c)
         case .grandes: elementos = grandes(c, ofrecidas: ofrecidas)
         }
+        // Las reglas del catálogo de esta categoría, sin repetir lo que ya se ofreció.
+        let yaOfrecidas = Set(ofrecidas + elementos.flatMap { $0.rutas.map(\.path) })
+        elementos += catalogo(categoria, c, excluir: yaOfrecidas)
         // Las rutas protegidas nunca se ofrecen, aunque alguna regla las haya encontrado.
         return elementos.compactMap { el in
-            guard el.accion == .borrar else { return el }
             var e = el
-            e.rutas = el.rutas.filter(Seguridad.sePuedeBorrar)
+            switch el.accion {
+            case .borrar: e.rutas = el.rutas.filter(Seguridad.sePuedeBorrar)
+            case .borrarComoAdmin: e.rutas = el.rutas.filter(Seguridad.sePuedeBorrarComoAdmin)
+            default: return el
+            }
             return e.rutas.isEmpty ? nil : e
         }
     }
@@ -1226,6 +1233,14 @@ struct Escaner {
             let nombre = Rutas.nombre(raiz)
             var regenerables = artefactos.filter { $0.tipo != .venv }
             let venvs = artefactos.filter { $0.tipo == .venv }
+            // Del catálogo: los nombres ambiguos (dist, out…) solo cuentan si git los ignora; los dudosos van aparte.
+            let ambiguas = regenerables.filter { $0.tipo == .catalogo && Catalogo.artefactos[$0.regla].soloSiIgnoradaPorGit }
+            if !ambiguas.isEmpty {
+                let ignoradas = c.indice.repos.contains(raiz) ? carpetasIgnoradas(raiz, ambiguas.map(\.ruta)) : []
+                regenerables.removeAll { a in ambiguas.contains(a) && !ignoradas.contains(a.ruta) }
+            }
+            let dudosas = regenerables.filter { $0.tipo == .catalogo && Catalogo.artefactos[$0.regla].riesgo != .seguro }
+            regenerables.removeAll { dudosas.contains($0) }
             // Lo que está guardado en git no es compilación (por ejemplo, un build/ con recursos hechos a mano).
             var versionadas: [String] = []
             if c.indice.repos.contains(raiz), !regenerables.isEmpty {
@@ -1265,6 +1280,16 @@ struct Escaner {
                     rutas: urls, ultimoUso: actividad, categoria: .proyectos, riesgo: .seguro,
                     seleccionado: dias > 30, motivos: motivos, dueno: nombre))
             }
+            for d in dudosas {
+                let regla = Catalogo.artefactos[d.regla]
+                r.append(Elemento(
+                    nombre: "\(nombre) › \(Rutas.nombre(d.ruta))",
+                    detalle: "\(regla.descripcion.prefix(1).uppercased())\(regla.descripcion.dropFirst()) del proyecto.",
+                    consecuencia: regla.consecuencia,
+                    rutas: [URL(fileURLWithPath: d.ruta)], ultimoUso: actividad, categoria: .proyectos, riesgo: .revisar,
+                    motivos: [.info("questionmark.folder.fill", "Revísalo antes", regla.consecuencia)],
+                    dueno: nombre))
+            }
             for v in venvs {
                 r.append(Elemento(
                     nombre: "\(nombre) › \(Rutas.nombre(v.ruta))",
@@ -1302,6 +1327,14 @@ struct Escaner {
         return r
     }
 
+    /// Cuáles de estas carpetas ignora git (`git check-ignore`).
+    private func carpetasIgnoradas(_ repo: String, _ carpetas: [String]) -> Set<String> {
+        let relativas = carpetas.map { String($0.dropFirst(repo.count + 1)) }
+        let salida = Shell.ejecutar("/usr/bin/git", ["-C", repo, "check-ignore", "--"] + relativas, limite: 15).salida
+        let ignoradas = Set(salida.split(separator: "\n").map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "/")) })
+        return Set(carpetas.enumerated().filter { ignoradas.contains(relativas[$0.offset]) }.map(\.element))
+    }
+
     private func ultimoCommit(_ repo: String) -> Date? {
         let s = Shell.ejecutar("/usr/bin/git", ["-C", repo, "log", "-1", "--format=%ct"], limite: 5).salida
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1317,6 +1350,16 @@ struct Escaner {
         if hay("package.json") { return "Node.js" }
         if hay("Cargo.toml") { return "Rust" }
         if hay("pyproject.toml") || hay("requirements.txt") { return "Python" }
+        if hay("ProjectSettings/ProjectVersion.txt") { return "Unity" }
+        if hay("project.godot") { return "Godot" }
+        if hay("mix.exs") { return "Elixir" }
+        if hay("stack.yaml") || hay("cabal.project") { return "Haskell" }
+        if hay("build.zig") { return "Zig" }
+        if hay("CMakeLists.txt") { return "C/C++ (CMake)" }
+        let nombres = (try? FileManager.default.contentsOfDirectory(atPath: raiz)) ?? []
+        if nombres.contains(where: { $0.hasSuffix(".uproject") }) { return "Unreal Engine" }
+        if nombres.contains(where: { $0.hasSuffix(".sln") || $0.hasSuffix(".csproj") || $0.hasSuffix(".fsproj") }) { return ".NET" }
+        if nombres.contains(where: { $0.hasSuffix(".tf") }) { return "Terraform" }
         return "Proyecto"
     }
 
@@ -1328,7 +1371,8 @@ struct Escaner {
         }
         if a.contains(where: { $0.tipo == .pods }) { partes.append("tendrás que ejecutar «pod install»") }
         if partes.isEmpty { partes.append("se vuelve a generar la próxima vez que lo compiles") }
-        return "Tu código no se toca; " + Formato.lista(partes) + "."
+        let delCatalogo = Set(a.filter { $0.tipo == .catalogo }.map { Catalogo.artefactos[$0.regla].consecuencia }).sorted()
+        return (["Tu código no se toca; " + Formato.lista(partes) + "."] + delCatalogo).joined(separator: " ")
     }
 
     // MARK: - Carpetas ocultas de herramientas

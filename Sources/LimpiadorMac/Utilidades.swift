@@ -179,7 +179,32 @@ enum Seguridad {
         let h = Rutas.home.path
         if p == h || p.hasPrefix(h + "/") || p.hasPrefix("/Users/Shared/") { return !protegidas.contains(p) && p != h }
         if let raiz = raicesSistema.first(where: { p.hasPrefix($0 + "/") }) { return p.count > raiz.count + 1 }
-        return esVersionDeHomebrew(p) || esInstaladorDeMacOS(p)
+        if esZonaProhibida(p) { return false }
+        // Fuera de tu carpeta, solo lo que conoce el catálogo (rutas tuyas, como la caché de Bazel en /var/tmp).
+        return esVersionDeHomebrew(p) || esInstaladorDeMacOS(p) || Catalogo.cubre(p, admin: false)
+    }
+
+    /// Lo que se borra con la contraseña de administrador: solo rutas de las reglas de sistema del catálogo,
+    /// y nunca nada del propio macOS, de otros usuarios ni de la carpeta personal.
+    static func sePuedeBorrarComoAdmin(_ url: URL) -> Bool {
+        let p = normalizada(url.path)
+        guard !esZonaProhibida(p), !p.hasPrefix("/Users/") else { return false }
+        if url.pathExtension.lowercased() == "jks" || url.pathExtension.lowercased() == "keystore" { return false }
+        return Catalogo.cubre(p, admin: true)
+    }
+
+    /// Carpetas del sistema que nunca se tocan, ni ellas ni (en algunos casos) lo que tienen dentro.
+    static func esZonaProhibida(_ p: String) -> Bool {
+        let exactas: Set<String> = ["/", "/System", "/Library", "/Applications", "/Users", "/usr", "/bin", "/sbin",
+                                    "/var", "/etc", "/tmp", "/private", "/opt", "/cores", "/Volumes", "/Library/Caches",
+                                    "/Library/Logs", "/Library/Application Support", "/var/log", "/var/tmp",
+                                    "/Library/Developer", "/Library/Updates", "/opt/homebrew", "/usr/local"]
+        if exactas.contains(p) { return true }
+        let dentro = ["/System/", "/usr/bin/", "/usr/sbin/", "/usr/lib/", "/usr/libexec/", "/usr/share/", "/bin/", "/sbin/",
+                      "/var/db/", "/var/vm/", "/var/root/", "/var/protected/", "/Library/Keychains/", "/Library/Security/",
+                      "/Library/Apple/", "/Library/Preferences/", "/Library/LaunchDaemons/", "/Library/LaunchAgents/",
+                      "/Library/Extensions/", "/Library/Frameworks/", "/etc/"]
+        return dentro.contains { p.hasPrefix($0) }
     }
 
     /// «/opt/homebrew/Cellar/node/20.1.0»: una versión concreta de una fórmula (nunca la fórmula entera).
