@@ -101,6 +101,14 @@ struct Escaner {
             el.tamanosRutas = el.rutas.map { _ in 0 }
         } else {
             el.tamanosRutas = el.rutas.map { c.indice.bytes(de: $0) }
+            // El índice no registra carpetas pequeñas ni lo que hay dentro de paquetes (bibliotecas de Final Cut,
+            // de iMovie…): esas se miden aparte, como mucho 200 por elemento.
+            var medidas = 0
+            for (j, u) in el.rutas.enumerated() where el.tamanosRutas[j] == 0 && medidas < 200 {
+                guard c.indice.info(u.path) == nil, Rutas.esCarpeta(u) else { continue }
+                el.tamanosRutas[j] = Tamanos.de(u)
+                medidas += 1
+            }
             el.tamano = el.tamanosRutas.reduce(0, +)
         }
         if el.ultimoUso == nil { el.ultimoUso = c.indice.masReciente(de: el.rutas) }

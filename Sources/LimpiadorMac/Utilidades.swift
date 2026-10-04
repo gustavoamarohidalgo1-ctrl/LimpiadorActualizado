@@ -338,6 +338,12 @@ struct ArchivosAbiertos {
         return r
     }
 
+    /// ¿Algún programa tiene abierta esta ruta o algo de dentro?
+    func tieneAbierto(_ ruta: String) -> Bool {
+        let p = Seguridad.normalizada(ruta)
+        return rutas.contains { $0 == p || $0.hasPrefix(p + "/") }
+    }
+
     /// Nombres de lo que hay directamente dentro de `carpeta` y algún programa tiene abierto (o dentro).
     func hijosEnUso(de carpeta: String) -> Set<String> {
         let prefijo = carpeta + "/"

@@ -118,13 +118,40 @@ final class CatalogoTests: XCTestCase {
     }
 
     func testArtefactosDelCatalogo() throws {
-        // Sin reglas cargadas para «Library», no se reconoce nada raro.
         try crear("ProyectoUnity/ProjectSettings/ProjectVersion.txt")
         try crear("ProyectoUnity/Library/cache.bin")
-        let i = Catalogo.artefacto(nombre: "Library", padre: raiz.appendingPathComponent("ProyectoUnity").path)
-        if let i {
-            XCTAssertEqual(Catalogo.artefactos[i].carpeta, "Library")
-        }
+        let i = try XCTUnwrap(Catalogo.artefacto(nombre: "Library", padre: raiz.appendingPathComponent("ProyectoUnity").path))
+        XCTAssertEqual(Catalogo.artefactos[i].carpeta, "Library")
+        // Una carpeta «Library» sin proyecto de Unity al lado no es un artefacto.
         XCTAssertNil(Catalogo.artefacto(nombre: "Library", padre: raiz.path))
+
+        try crear("App/App.csproj")
+        XCTAssertNotNil(Catalogo.artefacto(nombre: "obj", padre: raiz.appendingPathComponent("App").path))
+        try crear("Nativo/CMakeLists.txt")
+        XCTAssertNotNil(Catalogo.artefacto(nombre: "cmake-build-debug", padre: raiz.appendingPathComponent("Nativo").path))
+        XCTAssertNil(Catalogo.artefacto(nombre: "cmake-build-debug", padre: raiz.appendingPathComponent("App").path))
+    }
+
+    /// Ninguna regla apunta a algo demasiado amplio y lo del sistema nunca se marca solo.
+    func testCatalogoBienFormado() {
+        var ids = Set<String>()
+        let prefijos = ["~/", "/", "$TEMPORAL/", "$CACHES/"]
+        for r in Catalogo.reglas {
+            XCTAssertTrue(ids.insert(r.id).inserted, "id repetido: \(r.id)")
+            XCTAssertTrue(prefijos.contains { r.patron.hasPrefix($0) }, r.id)
+            XCTAssertFalse(r.nombre.isEmpty || r.detalle.isEmpty || r.consecuencia.isEmpty, r.id)
+            XCTAssertFalse(["~", "~/", "~/Library", "~/Documents", "~/Desktop", "~/Downloads", "/", "/Library",
+                            "/System", "/Applications"].contains(r.patron) && r.modo == .carpeta, r.id)
+            if r.requiereAdmin {
+                XCTAssertTrue(r.patron.hasPrefix("/"), r.id)
+                XCTAssertFalse(r.preseleccionar, "Lo del sistema nunca se marca solo: \(r.id)")
+                XCTAssertEqual(r.categoria, .sistema, r.id)
+            }
+            if r.riesgo != .seguro { XCTAssertFalse(r.preseleccionar, r.id) }
+        }
+        for a in Catalogo.artefactos {
+            XCTAssertFalse(a.marcadores.isEmpty, a.carpeta)
+            XCTAssertFalse(a.descripcion.isEmpty || a.consecuencia.isEmpty, a.carpeta)
+        }
     }
 }

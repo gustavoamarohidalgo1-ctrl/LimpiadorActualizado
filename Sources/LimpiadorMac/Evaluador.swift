@@ -13,6 +13,15 @@ struct Contexto {
 final class Memoria: @unchecked Sendable {
     /// Archivos que son clones de APFS: comparten espacio con otra copia.
     var clones: [String: String] = [:]
+    private var abiertos: ArchivosAbiertos?
+
+    /// Lo que tienen abierto los programas (`lsof`), leído una sola vez por análisis.
+    func archivosAbiertos() -> ArchivosAbiertos {
+        if let abiertos { return abiertos }
+        let a = ArchivosAbiertos.capturar()
+        abiertos = a
+        return a
+    }
 }
 
 /// Revisa cada elemento con reglas generales (contenido, claves, código, uso actual…)

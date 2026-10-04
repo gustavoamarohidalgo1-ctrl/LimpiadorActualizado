@@ -10,8 +10,13 @@ extension Escaner {
         for regla in Catalogo.reglas where regla.categoria == categoria {
             if regla.requiereAccesoTotal && !c.accesoTotal { continue }
             if regla.soloSiInstalada && !Self.instalada(regla, c) { continue }
-            let rutas = Self.aplicar(regla, c).filter { u in
+            var rutas = Self.aplicar(regla, c).filter { u in
                 !vistas.contains(u.path) && !Rutas.estaDentro(u.path, de: vistas)
+            }
+            if regla.siNadaLoTieneAbierto && !rutas.isEmpty {
+                let abiertos = c.memoria.archivosAbiertos()
+                guard abiertos.disponible else { continue }   // si no se sabe, no se ofrece
+                rutas = rutas.filter { !abiertos.tieneAbierto($0.path) }
             }
             guard !rutas.isEmpty else { continue }
             for u in rutas { vistas.insert(u.path) }
@@ -63,24 +68,14 @@ extension Escaner {
         var rutas: [URL] = []
         switch regla.modo {
         case .carpeta:
-            rutas = base
+            rutas = conservar(regla.conservar, de: base, c)
         case .hijos:
             for b in base where Rutas.esCarpeta(b) {
-                var hijos = Rutas.hijos(b).filter {
+                let hijos = Rutas.hijos(b).filter {
                     let n = $0.lastPathComponent
                     return n != ".DS_Store" && n != ".localized" && !esEnlace($0.path)
                 }
-                switch regla.conservar {
-                case .nada:
-                    break
-                case .masReciente:
-                    if let mas = hijos.max(by: { fecha($0, c) < fecha($1, c) }) { hijos.removeAll { $0 == mas } }
-                case .versionMasAlta:
-                    if let mas = hijos.max(by: {
-                        $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedAscending
-                    }) { hijos.removeAll { $0 == mas } }
-                }
-                rutas += hijos
+                rutas += conservar(regla.conservar, de: hijos, c)
             }
         case .archivos(let extensiones):
             for b in base { rutas += archivos(en: b, extensiones: extensiones) }
@@ -92,10 +87,33 @@ extension Escaner {
         return rutas
     }
 
+    /// Quita de la lista la que se conserva (la más reciente o la de versión más alta).
+    private static func conservar(_ modo: Regla.Conservar, de lista: [URL], _ c: Contexto) -> [URL] {
+        var r = lista
+        switch modo {
+        case .nada:
+            break
+        case .masReciente:
+            if let mas = r.max(by: { fecha($0, c) < fecha($1, c) }) { r.removeAll { $0 == mas } }
+        case .versionMasAlta:
+            if let mas = r.max(by: {
+                $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedAscending
+            }) { r.removeAll { $0 == mas } }
+        }
+        return r
+    }
+
+    /// La ruta absoluta de un patrón: «~/…», «$TEMPORAL/…», «$CACHES/…» o «/…».
+    static func absoluto(_ patron: String) -> String? {
+        if patron.hasPrefix("~/") { return Rutas.home.path + String(patron.dropFirst(1)) }
+        if patron.hasPrefix("$TEMPORAL/") { return Sistema.temporal.map { $0 + String(patron.dropFirst("$TEMPORAL".count)) } }
+        if patron.hasPrefix("$CACHES/") { return Sistema.caches.map { $0 + String(patron.dropFirst("$CACHES".count)) } }
+        return patron.hasPrefix("/") ? patron : nil
+    }
+
     /// «~/Library/Application Support/Steam/steamapps/shadercache/*» → cada carpeta que existe.
     static func expandir(_ patron: String) -> [URL] {
-        let absoluto = patron.hasPrefix("~/") ? Rutas.home.path + String(patron.dropFirst(1)) : patron
-        guard absoluto.hasPrefix("/") else { return [] }
+        guard let absoluto = absoluto(patron) else { return [] }
         var actuales = [""]
         for parte in absoluto.split(separator: "/").map(String.init) {
             var siguientes: [String] = []
@@ -126,8 +144,9 @@ extension Escaner {
             if vistos > 50_000 { break }
             if e.level > 4 { e.skipDescendants(); continue }
             let n = u.lastPathComponent.lowercased()
-            guard extensiones.contains(where: { n.hasSuffix("." + $0) }),
-                  (try? u.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+            guard extensiones.contains(where: { n.hasSuffix("." + $0) }), !esEnlace(u.path) else { continue }
+            // También carpetas con esa extensión (las descargas a medias de Safari son paquetes «.download»).
+            if Rutas.esCarpeta(u) { e.skipDescendants() }
             r.append(u)
         }
         return r
@@ -148,7 +167,7 @@ extension Catalogo {
     /// solo lo que el catálogo conoce. `admin`: reglas que piden contraseña.
     static func cubre(_ ruta: String, admin: Bool, lista: [Regla] = Catalogo.reglas) -> Bool {
         let partes = ruta.split(separator: "/").map(String.init)
-        for regla in lista where regla.requiereAdmin == admin && !regla.patron.hasPrefix("~/") {
+        for regla in lista where regla.requiereAdmin == admin && regla.patron.hasPrefix("/") {
             // Igual que las rutas que se comprueban: sin «/private» delante de /var y /tmp.
             var texto = regla.patron
             for prefijo in ["/private/var/", "/private/tmp/", "/private/etc/"] where texto.hasPrefix(prefijo) {

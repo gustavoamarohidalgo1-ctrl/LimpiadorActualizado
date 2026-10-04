@@ -10,7 +10,8 @@ import Foundation
 ///           consecuencia: "Steam los vuelve a compilar la próxima vez que abras el juego.")
 ///         .en(.cachesApps).app("Steam", "com.valvesoftware.steam")
 ///
-/// En el patrón, `~` es la carpeta personal y `*` cualquier nombre en ese nivel (también vale `cmake-build-*`).
+/// En el patrón, `~` es la carpeta personal, `$TEMPORAL` y `$CACHES` las carpetas de tu usuario en /var/folders,
+/// y `*` cualquier nombre en ese nivel (también vale `cmake-build-*`).
 struct Regla {
     enum Modo: Equatable {
         /// Se ofrece cada ruta que coincide con el patrón.
@@ -49,6 +50,8 @@ struct Regla {
     private(set) var proceso: (nombre: String, patron: String)?
     /// Solo si la app sigue instalada (si no, lo que dejó ya sale en «Restos de apps borradas»).
     private(set) var soloSiInstalada = false
+    /// Se deja fuera lo que algún programa tiene abierto ahora mismo (según `lsof`).
+    private(set) var siNadaLoTieneAbierto = false
 
     init(_ id: String, _ patron: String, nombre: String, detalle: String, consecuencia: String) {
         self.id = id
@@ -90,6 +93,12 @@ struct Regla {
     func admin() -> Regla { var r = self; r.requiereAdmin = true; r.categoria = .sistema; return r }
 
     func accesoTotal() -> Regla { var r = self; r.requiereAccesoTotal = true; return r }
+
+    /// Para temporales: no ofrecer lo que un programa tenga abierto.
+    func sinArchivosAbiertos() -> Regla { var r = self; r.siNadaLoTieneAbierto = true; return r }
+
+    /// En modo carpeta con comodines: conservar una de las coincidencias («discord/0.0.*» → la versión más alta).
+    func conservando(_ c: Conservar) -> Regla { var r = self; r.conservar = c; return r }
 }
 
 /// Una carpeta regenerable dentro de un proyecto (por ejemplo, la «Library» de un proyecto de Unity).
@@ -108,6 +117,6 @@ struct ReglaArtefacto {
 
 /// Todas las reglas conocidas. Cada área vive en su propio archivo (`Catalogo+Area.swift`).
 enum Catalogo {
-    static let reglas: [Regla] = []
-    static let artefactos: [ReglaArtefacto] = []
+    static let reglas: [Regla] = apple + aplicaciones + desarrollo + descargas + sistema
+    static let artefactos: [ReglaArtefacto] = artefactosDeProyecto
 }
