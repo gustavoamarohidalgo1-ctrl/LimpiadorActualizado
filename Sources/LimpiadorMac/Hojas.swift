@@ -110,9 +110,9 @@ struct HojaConfirmacion: View {
             Image(systemName: "scalemass.fill").foregroundStyle(.green)
             if let real {
                 let otros = sel.filter { !$0.accion.sePuedeDeshacer }.reduce(Int64(0)) { $0 + $1.tamano }
+                let cuando: String = modo == .papelera && real.liberable > 0 ? " (lo que va a la Papelera, al vaciarla)" : ""
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Se liberan de verdad \(Formato.bytes(real.liberable + otros))"
-                         + (modo == .papelera && real.liberable > 0 ? " (lo que va a la Papelera, al vaciarla)" : ""))
+                    Text("Se liberan de verdad \(Formato.bytes(real.liberable + otros))\(cuando)")
                         .font(.callout.weight(.medium))
                     if real.compartido >= 1_000_000 {
                         Text("\(Formato.bytes(real.compartido)) no se liberan: los comparten clones de APFS, instantáneas de Time Machine o enlaces a archivos que se quedan.")

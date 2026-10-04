@@ -45,14 +45,20 @@ enum Diagnostico {
             var rutasSeleccion: [String] = []
             var porRiesgo: [Riesgo: Int] = [:]
             var ultimaFase = -1
+            var inicioFase = Date()
         }
         let suma = Suma()
         let inicio = Date()
         let indice = Escaner().ejecutar(
             progreso: { e in
                 if e.fase != suma.ultimaFase {
+                    if suma.ultimaFase >= 0 {
+                        print("  (\(String(format: "%.1f", Date().timeIntervalSince(suma.inicioFase))) s)")
+                    }
                     suma.ultimaFase = e.fase
+                    suma.inicioFase = Date()
                     print("\n▶︎ \(e.mensaje)  \(e.detalle)")
+                    fflush(stdout)
                 }
             },
             entrega: { els in
