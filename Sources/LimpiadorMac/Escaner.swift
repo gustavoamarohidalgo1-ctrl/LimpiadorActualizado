@@ -964,7 +964,9 @@ struct Escaner {
             for contenedor in Rutas.hijos(Rutas.enHome("Library/Containers")) {
                 let id = contenedor.lastPathComponent
                 let cache = contenedor.appendingPathComponent("Data/Library/Caches")
-                guard !id.hasPrefix("com.apple."), Rutas.existe(cache), c.apps.estaInstalado(carpeta: id) else { continue }
+                // Las extensiones de Safari guardan ahí sus reglas compiladas: borrarlas las reinicia.
+                guard !id.hasPrefix("com.apple."), !c.apps.extensionesSafari.contains(id.lowercased()),
+                      Rutas.existe(cache), c.apps.estaInstalado(carpeta: id) else { continue }
                 let app = c.apps.nombreApp(para: id) ?? nombreBonito(id)
                 r.append(cacheDeApp(app: app, clave: id, rutas: [cache]))
             }
@@ -1021,7 +1023,7 @@ struct Escaner {
     /// Solo se ofrece lo que ningún programa tiene abierto (según `lsof`); si no se puede saber, nada.
     private func temporales(_ c: Contexto) -> [Elemento] {
         var r: [Elemento] = []
-        let abiertos = ArchivosAbiertos.capturar()
+        let abiertos = c.memoria.archivosAbiertos()
         guard abiertos.disponible else { return [] }
         let ahora = Date()
 
@@ -1052,12 +1054,17 @@ struct Escaner {
         if let cachesSistema = Sistema.caches {
             let enUso = abiertos.hijosEnUso(de: cachesSistema)
             var compilador: [URL] = []
+            var webkit: [URL] = []
             var deApps: [(url: URL, nombre: String, clave: String, instalada: Bool)] = []
             for h in Rutas.hijos(URL(fileURLWithPath: cachesSistema)) where Rutas.esCarpeta(h) {
                 let n = h.lastPathComponent
                 guard !n.hasPrefix("."), !enUso.contains(n) else { continue }
                 if n == "clang" || n.hasPrefix("org.llvm.clang") || n == "com.apple.DeveloperTools" || n.hasPrefix("com.apple.dt.") {
                     compilador.append(h)
+                } else if n.hasPrefix("com.apple.WebKit.") || n == "com.apple.Safari" || n == "com.apple.Safari.SafeBrowsing"
+                            || n == "com.apple.SafariTechnologyPreview" {
+                    // Cada proceso de WebKit tiene aquí su caché («com.apple.WebKit.GPU+com.apple.Safari»): sombreadores, red…
+                    webkit.append(h)
                 } else if !n.hasPrefix("com.apple."), n.contains(".") {
                     let instalada = c.apps.estaInstalado(carpeta: n)
                     deApps.append((h, c.apps.nombreApp(para: n) ?? nombreBonito(n), n, instalada))
@@ -1071,6 +1078,15 @@ struct Escaner {
                     rutas: compilador, categoria: .temporales, riesgo: .seguro, seleccionado: true,
                     motivos: [.bien("arrow.triangle.2.circlepath", "Se regenera", "El compilador los vuelve a crear cuando los necesita.")],
                     enUso: Self.xcodeUso, dueno: "Xcode"))
+            }
+            if !webkit.isEmpty {
+                r.append(Elemento(
+                    nombre: "Cachés de Safari y WebKit",
+                    detalle: "Sombreadores de gráficos, caché de red y lista de navegación segura que Safari y las apps con contenido web guardan fuera de tu carpeta personal.",
+                    consecuencia: "Se vuelven a crear al navegar (las primeras páginas pueden tardar un poco más). Tu historial, marcadores y contraseñas no se tocan.",
+                    rutas: webkit, categoria: .temporales, riesgo: .seguro, seleccionado: true,
+                    motivos: [.bien("arrow.triangle.2.circlepath", "Se regenera", "Son cachés de los procesos de WebKit; nada las tiene abiertas ahora mismo.")],
+                    enUso: .app(nombre: "Safari", claves: ["com.apple.Safari", "Safari"]), dueno: "Safari"))
             }
             for a in deApps {
                 r.append(Elemento(

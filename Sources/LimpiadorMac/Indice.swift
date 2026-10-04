@@ -536,7 +536,8 @@ fileprivate final class Recorrido {
     ]
     private static let cachesInternasNombres: Set<String> = [
         "Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache", "GraphiteDawnCache",
-        "ShaderCache", "GrShaderCache", "component_crx_cache", "extensions_crx_cache", "optimization_guide_model_store",
+        "ShaderCache", "GrShaderCache", "GPUPersistentCache", "component_crx_cache", "extensions_crx_cache",
+        "optimization_guide_model_store",
     ]
     private static let codigoDeTerceros: Set<String> = ["node_modules", "site-packages", "vendor", "Pods", "__pycache__"]
     private static let componentes: Set<String> = ["plugins", "extensions", "packages", "lib", "runtimes", "versions",
@@ -594,9 +595,12 @@ fileprivate final class Recorrido {
 
         // Cachés que las apps (sobre todo las de Electron/Chromium) guardan junto a sus datos.
         if !a.enCacheInterna && ruta.hasPrefix(appSupport) {
-            let padreNombre = ((ruta as NSString).deletingLastPathComponent as NSString).lastPathComponent
+            let contenedora = (ruta as NSString).deletingLastPathComponent
+            let padreNombre = (contenedora as NSString).lastPathComponent
+            let abueloNombre = ((contenedora as NSString).deletingLastPathComponent as NSString).lastPathComponent
+            // «ScriptCache» no: es el código de los service workers y borrarlo rompe extensiones de Chromium (Manifest V3).
             if Self.cachesInternasNombres.contains(nombre)
-                || ((nombre == "CacheStorage" || nombre == "ScriptCache") && padreNombre == "Service Worker") {
+                || (nombre == "CacheStorage" && (padreNombre == "Service Worker" || abueloNombre == "WebStorage")) {
                 cachesInternas.append((ruta, .cache))
                 a.enCacheInterna = true
             } else if nombre == "logs" || nombre == "Logs" || nombre == "Crashpad" {

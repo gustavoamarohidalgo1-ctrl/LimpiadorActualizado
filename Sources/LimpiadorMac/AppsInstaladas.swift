@@ -34,6 +34,8 @@ struct DatosApp {
     var version: String?
     /// Identificadores de sus extensiones, ayudantes y apps de inicio (cada uno puede tener su propio contenedor).
     var embebidos: [String] = []
+    /// Las que son extensiones de Safari (bloqueadores de contenido, extensiones web…).
+    var extensionesSafari: [String] = []
     var equipos: Set<String> = []
     var grupos: Set<String> = []
 
@@ -62,7 +64,10 @@ struct DatosApp {
         }
         for h in dentro.prefix(120) {
             let plist = NSDictionary(contentsOf: h.appendingPathComponent("Contents/Info.plist"))
-            if let id = (plist?["CFBundleIdentifier"] as? String)?.lowercased() { d.embebidos.append(id) }
+            guard let id = (plist?["CFBundleIdentifier"] as? String)?.lowercased() else { continue }
+            d.embebidos.append(id)
+            let punto = (plist?["NSExtension"] as? [String: Any])?["NSExtensionPointIdentifier"] as? String
+            if punto?.hasPrefix("com.apple.Safari") == true { d.extensionesSafari.append(id) }
         }
         // Las apps de Apple usan «group.com.apple.…», que ya se reconoce sin leer la firma.
         guard d.principal?.hasPrefix("com.apple.") != true else { return d }
@@ -93,6 +98,8 @@ struct AppsInstaladas {
     /// Apps en /Applications (para saber si una copia suelta sobra) y su versión.
     private(set) var idsEnAplicaciones: Set<String> = []
     private(set) var versionEnAplicaciones: [String: String] = [:]
+    /// Extensiones de Safari instaladas: su contenedor guarda reglas compiladas y no se limpia.
+    private(set) var extensionesSafari: Set<String> = []
     private var nombrePorID: [String: String] = [:]
     private var nombrePorNombre: [String: String] = [:]
     private var versionPorNombre: [String: String] = [:]
@@ -207,6 +214,7 @@ struct AppsInstaladas {
             bundleIDs.insert(id)
             if nombrePorID[id] == nil { nombrePorID[id] = d.visible }
         }
+        extensionesSafari.formUnion(d.extensionesSafari)
         for e in d.equipos {
             equipos.insert(e)
             if nombrePorEquipo[e] == nil { nombrePorEquipo[e] = d.visible }
