@@ -156,6 +156,59 @@ enum Seguridad {
         return Set(rel.map { $0.isEmpty ? h : h + "/" + $0 })
     }()
 
+    /// Dentro de tu carpeta, lo que nunca se borra ni entero ni por partes: la nube (borrar ahí es borrarlo en todos
+    /// tus dispositivos), bases de datos de macOS que se rompen o que macOS no deja tocar, y credenciales y chats de
+    /// herramientas de IA que viven junto a sus cachés.
+    private static let nuncaDentro: [String] = [
+        "Library/Mobile Documents", "Library/CloudStorage", "Library/Application Support/CloudDocs",
+        "Library/Application Support/FileProvider", "Library/Caches/com.apple.bird", "Library/Caches/CloudKit",
+        "Library/Caches/FamilyCircle", "Library/Caches/VoiceTrigger", "Library/VoiceTrigger", "Library/Metadata/CoreSpotlight",
+        "Library/Suggestions", "Library/IdentityCaches", "Library/Biome", "Library/Trial", "Library/Messages", "Library/Mail",
+        "Library/Application Support/AddressBook", "Library/Application Support/com.apple.TCC",
+        "Library/Application Support/com.apple.wallpaper", "Library/Application Support/com.apple.idleassetsd",
+        "Library/Containers/com.apple.BKAgentService", "Library/Containers/com.apple.AMPArtworkAgent/Data/Documents",
+        "Library/Containers/com.apple.iBooksX/Data/Library/Caches/Inbox",
+        // Sincronización: vínculo con la cuenta y archivos pendientes de subir.
+        ".dropbox", ".pcloud/Cache", ".pcloud/data.db",
+        // Gemini CLI guarda en «tmp» las conversaciones y los puntos de control.
+        ".gemini/tmp",
+        // Credenciales y datos de herramientas de IA.
+        ".netrc", ".kaggle/kaggle.json", ".config/wandb", ".openml/config", ".cache/huggingface/token",
+        ".cache/huggingface/stored_tokens", ".cache/huggingface/accelerate", ".ollama/id_ed25519", ".ollama/id_ed25519.pub",
+        ".lmstudio/.internal", ".lmstudio/conversations", ".cache/lm-studio/conversations", ".diffusionbee/images",
+        ".continue/config.yaml", ".continue/config.json", ".continue/.env", ".streamlit/credentials.toml",
+        "Library/Application Support/Jan/data/threads", "Library/Application Support/Jan/data/assistants",
+        "Library/Application Support/Jan/data/provider_secrets.enc", "Library/Application Support/Jan/data/settings.json",
+        "Documents/superwhisper", "invokeai/outputs", "invokeai/databases",
+    ].map { Rutas.home.path + "/" + $0 }
+
+    /// Carpetas de macOS que, estén donde estén, nunca se ofrecen: borrarlas rompe funciones del sistema
+    /// (fuentes, Spotlight, audio, Notas, Ajustes, iCloud…) o macOS no deja tocarlas (UF_DATAVAULT).
+    private static let nombresDeMacOS = [
+        "com.apple.e5rt.e5bundlecache", "*com.apple.coreaudio*", "com.apple.audio.*", "com.apple.FontRegistry*",
+        "com.apple.Spotlight*", "com.apple.spotlight*", "com.apple.LaunchServices-*", "com.apple.dock.iconcache",
+        "com.apple.wallpaper.extension.image", "com.apple.Notes*", "group.com.apple.notes", "com.apple.Settings*",
+        "com.apple.systempreferences*", "com.apple.controlcenter*", "com.apple.containermanagerd", "com.apple.ap.adprivacyd",
+        "com.apple.Safari.SafeBrowsing", "com.apple.homed", "com.apple.HomeKit", "com.apple.appstoreagent", "com.apple.appstore",
+        "com.apple.amp.itmstransporter", "com.apple.bird", "com.apple.CloudDocs*", "com.apple.WorkflowKit.*ShortcutsSandboxCache",
+        "com.apple.siriactionsd.ShortcutsSandboxCache",
+    ]
+
+    /// Excepciones dentro de esas zonas: solo vistas previas que se regeneran.
+    private static let permitidasDentro: [String] = ["Library/Messages/Caches/Previews"].map { Rutas.home.path + "/" + $0 + "/" }
+
+    /// ¿Está la ruta en algo que nunca se toca?
+    static func esIntocable(_ p: String) -> Bool {
+        if nuncaDentro.contains(where: { p == $0 || p.hasPrefix($0 + "/") })
+            && !permitidasDentro.contains(where: { p.hasPrefix($0) }) { return true }
+        let partes = p.split(separator: "/")
+        // Dentro de una fototeca solo manda Fotos.
+        if partes.dropLast().contains(where: { $0.hasSuffix(".photoslibrary") }) { return true }
+        return partes.contains { parte in
+            parte.contains("com.apple.") && nombresDeMacOS.contains { fnmatch($0, String(parte), 0) == 0 }
+        }
+    }
+
     /// Carpetas de sistema de tu usuario: se puede borrar lo que tienen dentro, nunca ellas mismas.
     private static let raicesSistema: [String] = [Sistema.temporal, Sistema.caches].compactMap { $0 }.map(normalizada)
 
@@ -176,6 +229,7 @@ enum Seguridad {
         if p.contains("/Library/Keychains") || p.contains("/.ssh/") || p.hasSuffix("/.ssh")
             || p.hasSuffix("/.git") || p.contains("/.git/") { return false }
 
+        if esIntocable(p) { return false }
         let h = Rutas.home.path
         if p == h || p.hasPrefix(h + "/") || p.hasPrefix("/Users/Shared/") { return !protegidas.contains(p) && p != h }
         if let raiz = raicesSistema.first(where: { p.hasPrefix($0 + "/") }) { return p.count > raiz.count + 1 }
@@ -190,7 +244,7 @@ enum Seguridad {
         let p = normalizada(url.path)
         // Restos de apps en el sistema: se vuelve a comprobar que sigan siendo huérfanos.
         if Huerfanos.esAgenteHuerfano(p) || Huerfanos.esAyudanteHuerfano(p) { return true }
-        guard !esZonaProhibida(p), !p.hasPrefix("/Users/") else { return false }
+        guard !esZonaProhibida(p), !p.hasPrefix("/Users/"), !esIntocable(p) else { return false }
         if url.pathExtension.lowercased() == "jks" || url.pathExtension.lowercased() == "keystore" { return false }
         return Catalogo.cubre(p, admin: true)
     }

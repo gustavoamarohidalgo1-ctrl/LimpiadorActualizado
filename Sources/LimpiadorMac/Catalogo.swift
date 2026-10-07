@@ -122,6 +122,6 @@ struct ReglaArtefacto {
 
 /// Todas las reglas conocidas. Cada área vive en su propio archivo (`Catalogo+Area.swift`).
 enum Catalogo {
-    static let reglas: [Regla] = apple + aplicaciones + desarrollo + descargas + sistema
-    static let artefactos: [ReglaArtefacto] = artefactosDeProyecto
+    static let reglas: [Regla] = [apple, aplicaciones, desarrollo, descargas, sistema, porAreas].flatMap { $0 }
+    static let artefactos: [ReglaArtefacto] = artefactosDeProyecto + artefactosExtra
 }

@@ -50,3 +50,57 @@ enum Huerfanos {
         Rutas.hijos(URL(fileURLWithPath: carpetaAyudantes)).filter { esAyudanteHuerfano($0.path) }
     }
 }
+
+/// Los vídeos Aerial que tienes puestos de fondo de pantalla o de salvapantallas (por su identificador).
+enum FondosEnUso {
+    /// `nil` si no se puede saber: entonces no se ofrece ningún vídeo.
+    static func identificadores() -> Set<String>? {
+        let indice = Rutas.enHome("Library/Application Support/com.apple.wallpaper/Store/Index.plist")
+        guard let datos = try? Data(contentsOf: indice),
+              let raiz = try? PropertyListSerialization.propertyList(from: datos, format: nil) else { return nil }
+        var r = Set<String>()
+        recoger(raiz, en: &r, nivel: 0)
+        let byHost = Rutas.enHome("Library/Preferences/ByHost")
+        for u in Rutas.hijos(byHost) where u.lastPathComponent.hasPrefix("com.apple.screensaver.") && u.pathExtension == "plist" {
+            if let d = try? Data(contentsOf: u), let p = try? PropertyListSerialization.propertyList(from: d, format: nil) {
+                recoger(p, en: &r, nivel: 0)
+            }
+        }
+        return r
+    }
+
+    private static let patronUUID = try? NSRegularExpression(
+        pattern: "[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+
+    /// Todos los UUID que aparecen en el plist, también dentro de plists guardados como datos.
+    static func recoger(_ valor: Any, en r: inout Set<String>, nivel: Int) {
+        guard nivel < 32 else { return }
+        switch valor {
+        case let d as [String: Any]:
+            for (k, v) in d {
+                buscar(k, en: &r)
+                recoger(v, en: &r, nivel: nivel + 1)
+            }
+        case let a as [Any]:
+            for v in a { recoger(v, en: &r, nivel: nivel + 1) }
+        case let s as String:
+            buscar(s, en: &r)
+        case let d as Data:
+            if let p = try? PropertyListSerialization.propertyList(from: d, format: nil) {
+                recoger(p, en: &r, nivel: nivel + 1)
+            } else if let s = String(data: d, encoding: .utf8) {
+                buscar(s, en: &r)
+            }
+        default:
+            break
+        }
+    }
+
+    private static func buscar(_ texto: String, en r: inout Set<String>) {
+        guard let patronUUID else { return }
+        let rango = NSRange(texto.startIndex..., in: texto)
+        for m in patronUUID.matches(in: texto, range: rango) {
+            if let rr = Range(m.range, in: texto) { r.insert(texto[rr].uppercased()) }
+        }
+    }
+}

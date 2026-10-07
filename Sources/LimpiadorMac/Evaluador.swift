@@ -149,7 +149,8 @@ enum Evaluador {
         }
 
         // 9. En la nube: borrar aquí lo borra en todos tus dispositivos.
-        if rutas.contains(where: { $0.path.contains("/Library/Mobile Documents/") || $0.path.contains("/Library/CloudStorage/") }) {
+        if rutas.contains(where: { $0.path.contains("/Library/Mobile Documents/") || $0.path.contains("/Library/CloudStorage/")
+            || enCarpetaSincronizada($0.path) }) {
             nuevos.append(.peligro("icloud.fill", "En la nube",
                 "Está en iCloud Drive o en una carpeta sincronizada: si lo borras aquí, se borra en todos tus dispositivos."))
             riesgo = .cuidado
@@ -161,6 +162,24 @@ enum Evaluador {
         if el.riesgo > riesgoInicial || nuevos.contains(where: { $0.nivel >= .aviso }) {
             el.seleccionado = false
         }
+    }
+
+    /// Carpetas de sincronización clásicas en tu carpeta personal (Dropbox, Google Drive, OneDrive, MEGA, Nextcloud…).
+    private static let carpetasSincronizadas = ["Dropbox", "Dropbox (*)", "Google Drive*", "OneDrive*", "MEGA", "MEGAsync*",
+                                                "Nextcloud*", "ownCloud*", "pCloud Drive", "Box Sync", "Sync"]
+
+    static func enCarpetaSincronizada(_ ruta: String) -> Bool {
+        let h = Rutas.home.path + "/"
+        guard ruta.hasPrefix(h), let primera = ruta.dropFirst(h.count).split(separator: "/").first,
+              ruta.count > h.count + primera.count else { return false }
+        let nombre = String(primera)
+        guard carpetasSincronizadas.contains(where: { fnmatch($0, nombre, 0) == 0 }) else { return false }
+        // «Sync» solo cuenta si es de Resilio o Syncthing.
+        if nombre == "Sync" {
+            let raiz = h + nombre
+            return Rutas.existe(raiz + "/.sync") || Rutas.existe(raiz + "/.stfolder")
+        }
+        return true
     }
 
     private static func abiertaAhora(_ uso: EnUso, _ c: Contexto) -> String? {

@@ -104,11 +104,12 @@ extension Catalogo {
               detalle: "Paquetes descargados por pnpm (ubicación antigua).",
               consecuencia: "pnpm los vuelve a descargar. Los proyectos ya instalados siguen funcionando.")
             .en(.desarrollo).sinPreseleccion().proceso("pnpm", patron: "pnpm"),
+        // Solo los comprimidos: Volta necesita los archivos «node-v<versión>-npm» que guarda al lado.
         Regla("volta-descargas", "~/.volta/tools/inventory",
               nombre: "Descargas de Volta",
               detalle: "Instaladores de Node, npm y Yarn que Volta descargó.",
               consecuencia: "Nada: las versiones instaladas siguen funcionando.")
-            .en(.desarrollo),
+            .en(.desarrollo).archivos("tar.gz", "tgz", "zip"),
         Regla("prisma-motores", "~/.cache/prisma",
               nombre: "Motores de Prisma",
               detalle: "Binarios que Prisma descarga para cada versión.",

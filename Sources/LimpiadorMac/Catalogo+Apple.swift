@@ -18,7 +18,7 @@ extension Catalogo {
               nombre: "Caché de Música",
               detalle: "Carátulas y datos temporales de la app Música.",
               consecuencia: "Música los vuelve a descargar. Tus canciones y listas no se tocan.")
-            .app("Música", "com.apple.Music"),
+            .accesoTotal().app("Música", "com.apple.Music"),
         Regla("mapas-cache", "~/Library/Containers/com.apple.Maps/Data/Library/Caches",
               nombre: "Caché de Mapas",
               detalle: "Mapas e imágenes que Mapas descargó.",

@@ -80,6 +80,24 @@ struct Escaner {
         case .duplicados: elementos = duplicados(c)
         case .grandes: elementos = grandes(c, ofrecidas: ofrecidas)
         }
+        // Lo que ya ofreció una categoría anterior no se repite: ni la misma ruta, ni algo que está dentro,
+        // ni algo que la contiene (se contaría dos veces). Los duplicados tienen su propia lógica de copias.
+        if categoria != .duplicados && categoria != .grandes && !ofrecidas.isEmpty {
+            let previas = Set(ofrecidas)
+            var contienen = Set<String>()
+            for p in ofrecidas {
+                var u = (p as NSString).deletingLastPathComponent
+                while u.count > 1 && contienen.insert(u).inserted { u = (u as NSString).deletingLastPathComponent }
+            }
+            elementos = elementos.compactMap { el in
+                guard el.accion == .borrar || el.accion == .borrarComoAdmin else { return el }
+                var e = el
+                e.rutas = el.rutas.filter { u in
+                    !previas.contains(u.path) && !contienen.contains(u.path) && !Rutas.estaDentro(u.path, de: previas)
+                }
+                return e.rutas.isEmpty ? nil : e
+            }
+        }
         // Las reglas del catálogo de esta categoría, sin repetir lo que ya se ofreció.
         let yaOfrecidas = Set(ofrecidas + elementos.flatMap { $0.rutas.map(\.path) })
         elementos += catalogo(categoria, c, excluir: yaOfrecidas)
@@ -389,8 +407,16 @@ struct Escaner {
                  consecuencia: "pip los vuelve a descargar si hacen falta.", dueno: "Python"),
         CacheDev(rel: ".cache/uv", nombre: "Caché de uv", detalle: "Paquetes de Python descargados por uv.",
                  consecuencia: "uv los vuelve a descargar si hacen falta.", dueno: "Python"),
-        CacheDev(rel: "Library/Caches/pypoetry", nombre: "Caché de Poetry", detalle: "Paquetes de Python descargados por Poetry.",
+        // Solo las descargas: en «pypoetry/virtualenvs» están los entornos de todos tus proyectos de Poetry.
+        CacheDev(rel: "Library/Caches/pypoetry/cache", nombre: "Caché de Poetry", detalle: "Índices de paquetes de Python que consultó Poetry.",
                  consecuencia: "Poetry los vuelve a descargar si hacen falta.", dueno: "Python"),
+        CacheDev(rel: "Library/Caches/pypoetry/artifacts", nombre: "Paquetes descargados por Poetry",
+                 detalle: "Paquetes de Python que Poetry descargó para instalarlos.",
+                 consecuencia: "Poetry los vuelve a descargar si hacen falta.", dueno: "Python"),
+        CacheDev(rel: "Library/Caches/pypoetry/virtualenvs", nombre: "Entornos virtuales de Poetry",
+                 detalle: "Los entornos de Python de tus proyectos de Poetry (uno por proyecto).",
+                 consecuencia: "Cada proyecto de Poetry dejará de funcionar hasta que ejecutes «poetry install» en él.",
+                 riesgo: .revisar, preseleccion: false, dueno: "Python"),
         CacheDev(rel: "Library/Caches/Homebrew", nombre: "Caché de Homebrew", detalle: "Instaladores que descargó brew.",
                  consecuencia: "Nada: los programas ya están instalados.", dueno: "Homebrew"),
         CacheDev(rel: "Library/Caches/electron", nombre: "Caché de Electron", detalle: "Versiones de Electron descargadas al instalar paquetes.",
@@ -404,8 +430,10 @@ struct Escaner {
                  consecuencia: "Se vuelven a descargar al compilar.", dueno: "Xcode"),
         CacheDev(rel: "Library/Caches/Yarn", nombre: "Caché de Yarn", detalle: "Paquetes de Yarn descargados.",
                  consecuencia: "Yarn los vuelve a descargar.", dueno: "Yarn"),
+        // Con Plug'n'Play (Yarn 4), los proyectos usan estos paquetes directamente desde aquí.
         CacheDev(rel: ".yarn/berry/cache", nombre: "Caché de Yarn", detalle: "Paquetes de Yarn descargados.",
-                 consecuencia: "Yarn los vuelve a descargar.", dueno: "Yarn"),
+                 consecuencia: "Yarn los vuelve a descargar. Los proyectos que usan Plug'n'Play necesitarán «yarn install» antes de arrancar.",
+                 preseleccion: false, dueno: "Yarn"),
         CacheDev(rel: "Library/Caches/go-build", nombre: "Caché de Go", detalle: "Compilaciones de Go.",
                  consecuencia: "Go vuelve a compilar lo que necesite.", dueno: "Go"),
         CacheDev(rel: "go/pkg/mod", nombre: "Módulos de Go", detalle: "Dependencias de Go descargadas.",
@@ -414,8 +442,13 @@ struct Escaner {
                  consecuencia: "pnpm los vuelve a descargar.", dueno: "pnpm"),
         CacheDev(rel: ".bun/install/cache", nombre: "Caché de Bun", detalle: "Paquetes descargados por Bun.",
                  consecuencia: "Bun los vuelve a descargar.", dueno: "Bun"),
-        CacheDev(rel: ".cargo/registry", nombre: "Registro de Cargo", detalle: "Librerías de Rust descargadas.",
-                 consecuencia: "Cargo las vuelve a descargar al compilar.", preseleccion: false, dueno: "Rust"),
+        CacheDev(rel: ".cargo/registry/src", nombre: "Código de librerías de Rust",
+                 detalle: "Librerías de Rust que Cargo descomprimió para compilar.",
+                 consecuencia: "Cargo las vuelve a descomprimir de los paquetes descargados al compilar.", dueno: "Rust"),
+        CacheDev(rel: ".cargo/registry/cache", nombre: "Paquetes de Rust descargados", detalle: "Librerías de Rust descargadas por Cargo.",
+                 consecuencia: "Cargo las vuelve a descargar al compilar (necesita internet).", preseleccion: false, dueno: "Rust"),
+        CacheDev(rel: ".cargo/registry/index", nombre: "Índice de librerías de Rust", detalle: "La lista de librerías de crates.io.",
+                 consecuencia: "Cargo la vuelve a descargar al compilar.", preseleccion: false, dueno: "Rust"),
         CacheDev(rel: ".m2/repository", nombre: "Repositorio de Maven", detalle: "Dependencias Java descargadas.",
                  consecuencia: "Maven las vuelve a descargar al compilar.", preseleccion: false, dueno: "Maven"),
         CacheDev(rel: ".nuget/packages", nombre: "Paquetes de NuGet", detalle: "Dependencias de .NET descargadas.",
@@ -491,6 +524,16 @@ struct Escaner {
         for d in Self.cachesDeDesarrollo {
             let url = Rutas.enHome(d.rel)
             guard Rutas.existe(url) else { continue }
+            if d.rel == ".cache/uv", let chats = Self.datosDeOpenWebUI(en: url) {
+                r.append(Elemento(
+                    nombre: d.nombre, detalle: d.detalle,
+                    consecuencia: "Además de paquetes, contiene tus conversaciones de Open WebUI (\(Formato.rutaCorta(chats))): se perderían.",
+                    rutas: [url], categoria: .desarrollo, riesgo: .cuidado, seleccionado: false,
+                    motivos: [.peligro("bubble.left.and.bubble.right.fill", "Chats de Open WebUI",
+                                       "Open WebUI instalado con uvx guarda sus chats y archivos dentro de la caché de uv.")],
+                    enUso: d.uso, dueno: d.dueno))
+                continue
+            }
             r.append(Elemento(
                 nombre: d.nombre, detalle: d.detalle, consecuencia: d.consecuencia, rutas: [url],
                 categoria: .desarrollo, riesgo: d.riesgo, seleccionado: d.preseleccion,
@@ -521,6 +564,26 @@ struct Escaner {
                 dueno: "Hugging Face"))
         }
         return r
+    }
+
+    /// ¿Hay canciones descargadas para escuchar sin conexión? (Las versiones antiguas las guardaban dentro de la caché.)
+    static func spotifyTieneDescargas(_ cache: URL) -> Bool {
+        let storage = Rutas.enHome("Library/Application Support/Spotify/PersistentCache/Storage")
+        let bnk = try? FileManager.default.attributesOfItem(atPath: storage.appendingPathComponent("offline.bnk").path)
+        if ((bnk?[.size] as? NSNumber)?.int64Value ?? 0) > 1024 { return true }
+        if Rutas.hijos(storage).contains(where: { $0.pathExtension == "file" }) { return true }
+        return Rutas.existe(cache.appendingPathComponent("Storage")) || Rutas.existe(cache.appendingPathComponent("storage"))
+    }
+
+    /// «Library/Caches/pypoetry/cache» → «pypoetry».
+    private static func carpetaDeCaches(_ rel: String) -> String? {
+        guard rel.hasPrefix("Library/Caches/") else { return nil }
+        return rel.dropFirst("Library/Caches/".count).split(separator: "/").first.map(String.init)
+    }
+
+    /// La base de datos de Open WebUI (chats y archivos) si está dentro de una caché de uv.
+    static func datosDeOpenWebUI(en uv: URL) -> URL? {
+        Escaner.expandir(uv.path + "/archive-v0/*/lib/python3*/site-packages/open_webui/data/webui.db").first
     }
 
     /// Gradle separado por partes, sabiendo qué versión usa cada proyecto.
@@ -670,12 +733,24 @@ struct Escaner {
             }
         }
         var porNavegador: [String: [URL]] = [:]
+        var perfilesMCP: [URL] = []
         for h in Rutas.hijos(Rutas.enHome("Library/Caches/ms-playwright")) where Rutas.esCarpeta(h) {
             let n = h.lastPathComponent
+            // «mcp-chrome-<hash>» es el perfil (con sesiones iniciadas) del navegador de Playwright MCP de un proyecto.
+            if n.hasPrefix("mcp-") { perfilesMCP.append(h); continue }
             guard let guion = n.lastIndex(of: "-") else { continue }
             porNavegador[String(n[..<guion]), default: []].append(h)
         }
         for (nav, lista) in porNavegador { versiones(lista, herramienta: "Playwright", navegador: nav) }
+        if !perfilesMCP.isEmpty {
+            r.append(Elemento(
+                nombre: "Perfiles del navegador de Playwright MCP",
+                detalle: "Perfiles del navegador que usan los asistentes de IA (Playwright MCP), uno por proyecto.",
+                consecuencia: "Se cierran las sesiones que iniciaste en ese navegador de automatización; se crea uno nuevo al usarlo.",
+                rutas: perfilesMCP, categoria: .desarrollo, riesgo: .revisar,
+                motivos: [.info("person.crop.circle.badge.questionmark", "Sesiones guardadas", "Guardan las sesiones iniciadas en webs desde ese navegador.")],
+                enUso: .proceso(nombre: "Playwright MCP", patron: "ms-playwright/mcp-"), dueno: "Playwright"))
+        }
         for nav in Rutas.hijos(Rutas.enHome(".cache/puppeteer")) where Rutas.esCarpeta(nav) {
             versiones(Rutas.hijos(nav).filter { Rutas.esCarpeta($0) }, herramienta: "Puppeteer", navegador: nav.lastPathComponent)
         }
@@ -913,17 +988,30 @@ struct Escaner {
     private func cachesApps(_ c: Contexto) -> [Elemento] {
         var r: [Elemento] = []
         let caches = Rutas.enHome("Library/Caches")
-        let deDesarrollo = Set(Self.cachesDeDesarrollo.map { Rutas.enHome($0.rel).path } + [caches.appendingPathComponent("ms-playwright").path])
-        let omitir: Set<String> = ["CloudKit", "FamilyCircle", "GeoServices", "PassKit", "Animoji", "Google", "JetBrains"]
+        // Las carpetas de ~/Library/Caches que ya trata otra parte (cachés de desarrollo o reglas del catálogo, que
+        // ofrecen solo lo que se puede borrar dentro) no se ofrecen enteras.
+        let deDesarrollo = Set(Self.cachesDeDesarrollo.compactMap { Self.carpetaDeCaches($0.rel) }.map { caches.appendingPathComponent($0).path }
+                               + [caches.appendingPathComponent("ms-playwright").path])
+        let conReglas = Catalogo.carpetasDeCachesConReglas
+        // org.R-project.R: dentro está la caché de renv, a la que enlazan las librerías de tus proyectos de R.
+        let omitir: Set<String> = ["CloudKit", "FamilyCircle", "GeoServices", "PassKit", "Animoji", "Google", "JetBrains",
+                                   "org.R-project.R", "com.apple.bird"]
 
         for h in Rutas.hijos(caches) where Rutas.esCarpeta(h) {
             let n = h.lastPathComponent
             if n.hasPrefix("com.apple.") || n.hasPrefix(".") || deDesarrollo.contains(h.path) || omitir.contains(n)
-                || Self.propios.contains(n) { continue }
+                || conReglas.contains(n) || Self.propios.contains(n) { continue }
             // Las cachés de apps desinstaladas se ofrecen junto al resto de lo que dejó esa app.
             guard c.apps.estaInstalado(carpeta: n) else { continue }
             let app = c.apps.nombreApp(para: n) ?? nombreBonito(n)
-            r.append(cacheDeApp(app: app, clave: n, rutas: [h]))
+            var el = cacheDeApp(app: app, clave: n, rutas: [h])
+            if n.lowercased() == "com.spotify.client" && Self.spotifyTieneDescargas(h) {
+                el.riesgo = .revisar
+                el.seleccionado = false
+                el.consecuencia = "Tienes música descargada para escuchar sin conexión: puede que Spotify tenga que volver a descargarla."
+                el.motivos = [.aviso("music.note", "Música descargada", "Spotify guarda junto a su caché las canciones que descargaste para escuchar sin conexión.")]
+            }
+            r.append(el)
         }
         // Google y JetBrains: una carpeta por programa y versión (las versiones viejas van en «desarrollo»).
         for vendedor in ["Google", "JetBrains"] {
@@ -962,7 +1050,11 @@ struct Escaner {
         // Apps de la App Store guardan su caché dentro de su contenedor.
         if c.accesoTotal {
             for contenedor in Rutas.hijos(Rutas.enHome("Library/Containers")) {
-                let id = contenedor.lastPathComponent
+                var id = contenedor.lastPathComponent
+                if UUID(uuidString: id) != nil {
+                    guard let real = Self.appDeContenedor(contenedor), c.apps.bundleIDs.contains(real.lowercased()) else { continue }
+                    id = real
+                }
                 let cache = contenedor.appendingPathComponent("Data/Library/Caches")
                 // Las extensiones de Safari guardan ahí sus reglas compiladas: borrarlas las reinicia.
                 guard !id.hasPrefix("com.apple."), !c.apps.extensionesSafari.contains(id.lowercased()),
@@ -1061,8 +1153,7 @@ struct Escaner {
                 guard !n.hasPrefix("."), !enUso.contains(n) else { continue }
                 if n == "clang" || n.hasPrefix("org.llvm.clang") || n == "com.apple.DeveloperTools" || n.hasPrefix("com.apple.dt.") {
                     compilador.append(h)
-                } else if n.hasPrefix("com.apple.WebKit.") || n == "com.apple.Safari" || n == "com.apple.Safari.SafeBrowsing"
-                            || n == "com.apple.SafariTechnologyPreview" {
+                } else if n.hasPrefix("com.apple.WebKit.") || n == "com.apple.SafariTechnologyPreview" {
                     // Cada proceso de WebKit tiene aquí su caché («com.apple.WebKit.GPU+com.apple.Safari»): sombreadores, red…
                     webkit.append(h)
                 } else if !n.hasPrefix("com.apple."), n.contains(".") {
@@ -1082,7 +1173,7 @@ struct Escaner {
             if !webkit.isEmpty {
                 r.append(Elemento(
                     nombre: "Cachés de Safari y WebKit",
-                    detalle: "Sombreadores de gráficos, caché de red y lista de navegación segura que Safari y las apps con contenido web guardan fuera de tu carpeta personal.",
+                    detalle: "Sombreadores de gráficos y caché de red que Safari y las apps con contenido web guardan fuera de tu carpeta personal.",
                     consecuencia: "Se vuelven a crear al navegar (las primeras páginas pueden tardar un poco más). Tu historial, marcadores y contraseñas no se tocan.",
                     rutas: webkit, categoria: .temporales, riesgo: .seguro, seleccionado: true,
                     motivos: [.bien("arrow.triangle.2.circlepath", "Se regenera", "Son cachés de los procesos de WebKit; nada las tiene abiertas ahora mismo.")],
@@ -1145,6 +1236,11 @@ struct Escaner {
                 let n = h.lastPathComponent
                 if n.hasPrefix(".") || Self.propios.contains(n) { continue }
                 let clave = n.replacingOccurrences(of: ".savedState", with: "")
+                // Contenedores con nombre de UUID (apps de iPhone y iPad en el Mac): la app se sabe por sus metadatos;
+                // si no se puede leer, no se ofrece.
+                if rel == "Library/Containers" && UUID(uuidString: n) != nil {
+                    guard let id = Self.appDeContenedor(h), !c.apps.bundleIDs.contains(id.lowercased()) else { continue }
+                }
                 if c.apps.estaInstalado(carpeta: clave) { continue }
                 candidatos.append(Resto(url: h, nombre: clave, lugar: lugar))
             }
@@ -1232,6 +1328,12 @@ struct Escaner {
                 motivos: [.info("arrow.up.bin.fill", "Actualización de macOS", "macOS los movió aquí porque no encajaban tras actualizar.")]))
         }
         return r
+    }
+
+    /// El identificador de la app dueña de un contenedor, según los metadatos que guarda macOS.
+    static func appDeContenedor(_ contenedor: URL) -> String? {
+        let d = NSDictionary(contentsOf: contenedor.appendingPathComponent(".com.apple.containermanagerd.metadata.plist"))
+        return d?["MCMMetadataIdentifier"] as? String
     }
 
     /// Agrupa los restos que pertenecen a la misma app («Riot Client», «Riot Games», «com.riotgames…»).
@@ -1440,6 +1542,8 @@ struct Escaner {
         ".expo", ".cocoapods", ".yarn", ".pub-cache", ".nuget", ".ollama", ".CFUserTextEncoding", ".DS_Store",
         // Se analizan aparte (cachés de desarrollo, VS Code y derivados).
         ".dartServer", ".skiko", ".vscode-insiders", ".vscode-oss", ".cursor", ".windsurf", ".conda",
+        // Apps de sincronización: guardan el vínculo con tu cuenta y archivos pendientes de subir.
+        ".dropbox", ".pcloud", ".megaCmd",
     ]
 
     private enum ClaseSubcarpeta { case temporal, registros, reinstalable, personal }
@@ -1465,7 +1569,9 @@ struct Escaner {
         var r: [Elemento] = []
         for h in Rutas.hijos(Rutas.home) {
             let n = h.lastPathComponent
-            guard n.hasPrefix("."), Rutas.esCarpeta(h), !Self.ocultasConocidas.contains(n) else { continue }
+            guard n.hasPrefix("."), Rutas.esCarpeta(h), !Self.ocultasConocidas.contains(n), !n.hasPrefix(".Box_"),
+                  // Las que el catálogo limpia por partes (solo lo regenerable) no se ofrecen enteras.
+                  !Catalogo.carpetasOcultasConReglas.contains(n) else { continue }
             let herramienta = String(n.dropFirst())
             if Rutas.existe(h.appendingPathComponent("pyvenv.cfg")) {
                 r.append(Elemento(

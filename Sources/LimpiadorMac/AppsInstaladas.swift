@@ -47,9 +47,11 @@ struct DatosApp {
 
     static func leer(_ url: URL) -> DatosApp {
         var d = DatosApp(visible: url.deletingPathExtension().lastPathComponent)
-        guard let info = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist")) as? [String: Any] else {
-            return d
-        }
+        // Las apps de iPhone y iPad instaladas en el Mac guardan su Info.plist en Wrapper/<App>.app.
+        let envuelta = Rutas.hijos(url.appendingPathComponent("Wrapper")).first { $0.pathExtension == "app" }
+        let plist = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist"))
+            ?? envuelta.flatMap { NSDictionary(contentsOf: $0.appendingPathComponent("Info.plist")) }
+        guard let info = plist as? [String: Any] else { return d }
         d.principal = (info["CFBundleIdentifier"] as? String)?.lowercased()
         for clave in ["CFBundleName", "CFBundleDisplayName", "CFBundleExecutable"] {
             if let v = info[clave] as? String { d.nombres.append(v) }
@@ -113,9 +115,17 @@ struct AppsInstaladas {
     static func cargar(appsExtra: [String] = []) -> AppsInstaladas {
         var r = AppsInstaladas()
         let fm = FileManager.default
-        let carpetas = ["/Applications", "/System/Applications", Rutas.enHome("Applications").path,
+        var carpetas = ["/Applications", "/System/Applications", Rutas.enHome("Applications").path,
                         "/System/Library/CoreServices", "/Applications/Xcode.app/Contents/Applications",
-                        "/Applications/Xcode.app/Contents/Developer/Applications", "/Library/Application Support"]
+                        "/Applications/Xcode.app/Contents/Developer/Applications", "/Library/Application Support",
+                        // Apps que viven fuera de Aplicaciones: sus datos no son restos.
+                        Rutas.enHome("Library/Application Support/Setapp/Applications").path,
+                        Rutas.enHome("Library/Application Support/Steam/steamapps/common").path,
+                        "/Users/Shared/Epic Games", Rutas.enHome("Games/Heroic").path,
+                        Rutas.enHome("Library/Application Support/itch/apps").path, "/Applications/Unity/Hub/Editor",
+                        Rutas.enHome("Applications/Sikarugir").path, Rutas.enHome("Applications/Kegworks").path,
+                        Rutas.enHome("Applications/Wineskin").path, Rutas.enHome("Applications/CrossOver").path]
+        carpetas += Escaner.expandir("/Users/Shared/Epic Games/UE_*/Engine/Binaries/Mac").map(\.path)
         var encontradas: [(url: URL, enAplicaciones: Bool)] = []
         var vistas = Set<String>()
         for carpeta in carpetas {
@@ -241,6 +251,8 @@ struct AppsInstaladas {
 
     mutating func agregarBundleID(_ id: String, nombre: String?) {
         let l = id.lowercased()
+        // Setapp añade «-setapp» al identificador: sus datos pueden estar con el nombre normal.
+        if l.hasSuffix("-setapp") { agregarBundleID(String(l.dropLast("-setapp".count)), nombre: nombre) }
         bundleIDs.insert(l)
         if let nombre, nombrePorID[l] == nil { nombrePorID[l] = nombre }
         // El «fabricante» (com.google.xxx -> google) también cuenta: muchas apps
@@ -289,12 +301,23 @@ struct AppsInstaladas {
         "tokenbucketratelimiter", "contextstoreagent", "loginwindow", "pbs", "mbuseragent",
         "networkserviceproxy", "familycircle", "coreparsec", "keychains", "limpiadormac", "geoservices",
         "cloudkit", "passkit", "familycircled", "sharedfilelistd", "localizationswitcherd",
+        // Carpetas de macOS sin el prefijo com.apple.
+        "voicetrigger", "metrics", "configuration", "gamekit", "ondemandresources", "destinationd", "heard",
+        "mobileactivationd", "rtcreportingd", "cleanupatstartup", "siritts", "colorsync", "desktoppictures", "metadata",
+        "acapelagroup", "astris", "icdd", "quicklook", "internetaccounts", "personalizationportrait", "rtcreports",
+        "smsmigrator", "trial", "assistant",
+    ]
+
+    /// Carpetas que no se llaman como su app: «Mega Limited» es de MEGA, «com.dropbox.…» de Dropbox.
+    private static let alias: [(prefijo: String, bundleID: String)] = [
+        ("mega limited", "mega.mac"), ("com.dropbox.", "com.getdropbox.dropbox"), ("dropboxelectron", "com.getdropbox.dropbox"),
     ]
 
     /// Decide si una carpeta pertenece a algo que sigue instalado.
     func estaInstalado(carpeta: String) -> Bool {
         let l = carpeta.lowercased()
         if l.hasPrefix("com.apple.") || l.contains("group.com.apple.") || l.hasPrefix("apple") { return true }
+        if Self.alias.contains(where: { l.hasPrefix($0.prefijo) && bundleIDs.contains($0.bundleID) }) { return true }
         // Carpetas compartidas: la firma de las apps dice exactamente cuáles usan.
         if grupos.contains(Self.sinExtension(l)) { return true }
         if let (equipo, resto) = Self.separarEquipo(carpeta) {

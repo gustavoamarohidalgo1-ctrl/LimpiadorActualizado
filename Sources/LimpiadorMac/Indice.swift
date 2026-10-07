@@ -205,6 +205,9 @@ final class Indice: @unchecked Sendable {
                           extras: [(ruta: String, zona: Zona)] = Indice.raicesExtra(),
                           progreso: (Progreso) -> Void) -> Indice {
         let inicio = Date()
+        // Los archivos que solo están en la nube (iCloud, Dropbox, OneDrive…) no se descargan al leerlos:
+        // el análisis nunca debe llenar el disco trayéndolos.
+        _ = setiopolicy_np(Self.iopolMaterializar, Self.iopolProceso, Self.iopolNoMaterializar)
         let indice = Indice()
         let marcador = Marcador()
         let omitir = rutasOmitidas(home: home, accesoTotal: accesoTotal)
@@ -297,6 +300,11 @@ final class Indice: @unchecked Sendable {
         sinPermiso += r.sinPermiso
     }
 
+    // IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_PROCESS e IOPOL_MATERIALIZE_DATALESS_FILES_OFF (sys/resource.h).
+    private static let iopolMaterializar: Int32 = 3
+    private static let iopolProceso: Int32 = 0
+    private static let iopolNoMaterializar: Int32 = 1
+
     /// Carpetas que no se recorren: datos privados de macOS (que además piden permisos)
     /// y, sin Acceso total al disco, las que el sistema bloquea.
     private static func rutasOmitidas(home: String, accesoTotal: Bool) -> Set<String> {
@@ -311,10 +319,17 @@ final class Indice: @unchecked Sendable {
             "Library/Application Support/CallHistoryTransactions", "Library/Application Support/Knowledge",
             "Library/Application Support/FileProvider", "Library/Application Support/CloudDocs",
             "Library/Application Support/com.apple.sharedfilelist", "Library/Application Support/DifferentialPrivacy",
+            // iCloud Drive y las carpetas de Dropbox, OneDrive, Google Drive…: borrar ahí es borrar en la nube,
+            // y recorrerlas puede descargar archivos que solo están en la nube.
+            "Library/Mobile Documents", "Library/CloudStorage",
         ]
         if !accesoTotal {
-            rel += ["Library/Containers", "Library/Group Containers", "Library/Mobile Documents",
-                    "Library/Application Support/MobileSync"]
+            rel += ["Library/Containers", "Library/Group Containers", "Library/Application Support/MobileSync",
+                    // Sin permiso, leerlas hace que macOS pida acceso a «Multimedia y Apple Music» y el análisis se para.
+                    "Library/Caches/com.apple.Music", "Library/Caches/com.apple.iTunes", "Library/Caches/com.apple.TV",
+                    "Library/Caches/com.apple.podcasts", "Library/Caches/com.apple.watchlistd",
+                    "Library/Caches/com.apple.AMPLibraryAgent", "Library/Caches/com.apple.AMPArtworkAgent",
+                    "Library/Caches/com.apple.AMPDevicesAgent"]
         }
         return Set(rel.map { home + "/" + $0 })
     }
@@ -468,6 +483,9 @@ fileprivate final class Recorrido {
                 if nivel > 0 {
                     let ruta = String(cString: e.pointee.fts_path)
                     if nivel <= 3 && omitir.contains(ruta) {
+                        saltar = true
+                    } else if st.st_flags & Self.sinDatosLocales != 0 {
+                        // Carpeta que solo está en la nube: listarla la pediría por red.
                         saltar = true
                     } else if let cortar, cortar(ruta, nivel) {
                         a.bytes = 0
@@ -640,6 +658,9 @@ fileprivate final class Recorrido {
 
     // MARK: Archivos
 
+    /// SF_DATALESS: el archivo o la carpeta solo está en la nube (sys/stat.h).
+    static let sinDatosLocales: UInt32 = 0x40000000
+
     private func archivo(_ e: UnsafeMutablePointer<FTSENT>, _ a: inout Acumulador) {
         let st = e.pointee.fts_statp.pointee
         var b = Int64(st.st_blocks) * 512
@@ -700,11 +721,13 @@ fileprivate final class Recorrido {
             if clave == extAAB || ((clave == extAPK || clave == extIPA) && Self.esRelease(String(cString: nombre).lowercased())) {
                 releases.append(String(cString: e.pointee.fts_path))
             }
-            if clave != extAAB && a.zona == .personal && tamano >= 1_000_000 {
+            if clave != extAAB && a.zona == .personal && tamano >= 1_000_000 && st.st_flags & Self.sinDatosLocales == 0 {
                 instaladores.append(indexado(e, st, b, a.zona))
             }
         case .comprimido:
-            if a.zona == .personal && tamano >= 5_000_000 { comprimidos.append(indexado(e, st, b, a.zona)) }
+            if a.zona == .personal && tamano >= 5_000_000 && st.st_flags & Self.sinDatosLocales == 0 {
+                comprimidos.append(indexado(e, st, b, a.zona))
+            }
         case .json, .plist, .properties:
             let n = String(cString: nombre)
             if n == "google-services.json" || n == "GoogleService-Info.plist" {
@@ -718,6 +741,8 @@ fileprivate final class Recorrido {
             nombresEspeciales(e, nombre: nombre, largo: largoNombre, zona: a.zona)
         }
 
+        // Lo que solo está en la nube no ocupa espacio aquí y leerlo (para compararlo) lo descargaría.
+        guard st.st_flags & Self.sinDatosLocales == 0 else { return }
         if b >= 50_000_000 { grandes.append(indexado(e, st, b, a.zona)) }
         if a.zona == .personal && tamano >= 1_000_000 && tipo != .instalador {
             duplicables.append(indexado(e, st, b, a.zona))

@@ -10,11 +10,19 @@ extension Escaner {
         for regla in Catalogo.reglas where regla.categoria == categoria {
             if regla.requiereAccesoTotal && !c.accesoTotal { continue }
             if regla.soloSiInstalada && !Self.instalada(regla, c) { continue }
-            // Ni lo que ya se ofreció, ni lo que está dentro, ni lo que lo contiene (se contaría dos veces).
+            // Lo de una app que ya no está, en las carpetas donde se buscan restos, sale allí entero (con el resto de la app).
+            if regla.app != nil && Self.enCarpetaDeRestos(regla.patron) && !Self.instalada(regla, c) { continue }
+            // Ni lo que ya se ofreció, ni lo que está dentro, ni lo que lo contiene (se contaría dos veces);
+            // tampoco lo que macOS no deja borrar.
             var rutas = Self.aplicar(regla, c).filter { u in
                 let prefijo = u.path + "/"
                 return !vistas.contains(u.path) && !Rutas.estaDentro(u.path, de: vistas)
-                    && !vistas.contains { $0.hasPrefix(prefijo) }
+                    && !vistas.contains { $0.hasPrefix(prefijo) } && Self.sePuedeQuitar(u, admin: regla.requiereAdmin)
+            }
+            if regla.id == "sistema-aerial" {
+                // El vídeo que tienes de fondo o de salvapantallas no se ofrece; si no se sabe cuál es, ninguno.
+                guard let enUso = FondosEnUso.identificadores() else { continue }
+                rutas = rutas.filter { !enUso.contains($0.deletingPathExtension().lastPathComponent.uppercased()) }
             }
             if regla.siNadaLoTieneAbierto && !rutas.isEmpty {
                 let abiertos = c.memoria.archivosAbiertos()
@@ -57,6 +65,29 @@ extension Escaner {
             accion: regla.requiereAdmin ? .borrarComoAdmin : .borrar, motivos: motivos, enUso: uso, dueno: regla.app)
     }
 
+    /// Carpetas donde «Restos de apps borradas» busca lo que dejan las apps desinstaladas.
+    static func enCarpetaDeRestos(_ patron: String) -> Bool {
+        ["~/Library/Application Support/", "~/Library/Caches/", "~/Library/Logs/", "~/Library/Containers/",
+         "~/Library/Group Containers/", "~/Library/HTTPStorages/", "~/Library/WebKit/", "~/Library/Saved Application State/"]
+            .contains { patron.hasPrefix($0) }
+    }
+
+    /// Banderas con las que macOS impide borrar, incluso a root: SIP (restricted, sunlnk), inmutable, solo añadir
+    /// y UF_DATAVAULT (carpetas que solo tocan los servicios de Apple).
+    private static let banderasQueImpidenBorrar: UInt32 = 0x0008_0000 | 0x0010_0000 | 0x0002_0000 | 0x0000_0002
+        | 0x0004_0000 | 0x0000_0004 | 0x0000_0080
+
+    /// ¿Se puede quitar de verdad? Si no, al limpiar solo daría errores (o borraría solo una parte).
+    static func sePuedeQuitar(_ u: URL, admin: Bool) -> Bool {
+        var st = stat()
+        let padre = u.deletingLastPathComponent().path
+        guard lstat(u.path, &st) == 0, st.st_flags & banderasQueImpidenBorrar == 0 else { return false }
+        var sp = stat()
+        guard lstat(padre, &sp) == 0, sp.st_flags & banderasQueImpidenBorrar == 0 else { return false }
+        // Sin contraseña, hace falta poder escribir en la carpeta que lo contiene (para moverlo a la Papelera).
+        return admin || access(padre, W_OK) == 0
+    }
+
     /// ¿Sigue instalada la app de la regla?
     static func instalada(_ regla: Regla, _ c: Contexto) -> Bool {
         if regla.bundleIDs.contains(where: { c.apps.bundleIDs.contains($0.lowercased()) }) { return true }
@@ -67,11 +98,10 @@ extension Escaner {
 
     /// Las rutas que cubre una regla, según su modo.
     static func aplicar(_ regla: Regla, _ c: Contexto) -> [URL] {
-        let base = expandir(regla.patron).filter { u in
-            !esEnlace(u.path) && !regla.exclusiones.contains { patron in
-                u.pathComponents.contains { fnmatch(patron, $0, 0) == 0 }
-            }
+        func excluida(_ u: URL) -> Bool {
+            regla.exclusiones.contains { patron in u.pathComponents.contains { fnmatch(patron, $0, 0) == 0 } }
         }
+        let base = expandir(regla.patron).filter { !esEnlace($0.path) && !excluida($0) }
         var rutas: [URL] = []
         switch regla.modo {
         case .carpeta:
@@ -82,10 +112,10 @@ extension Escaner {
                     let n = $0.lastPathComponent
                     return n != ".DS_Store" && n != ".localized" && !esEnlace($0.path)
                 }
-                rutas += conservar(regla.conservar, de: hijos, c)
+                rutas += conservar(regla.conservar, de: hijos.filter { !excluida($0) }, c)
             }
         case .archivos(let extensiones):
-            for b in base { rutas += archivos(en: b, extensiones: extensiones) }
+            for b in base { rutas += archivos(en: b, extensiones: extensiones).filter { !excluida($0) } }
         }
         if regla.edadMinimaDias > 0 {
             let limite = Date().addingTimeInterval(-Double(regla.edadMinimaDias) * 86400)
@@ -170,6 +200,28 @@ extension Escaner {
 }
 
 extension Catalogo {
+    /// Carpetas de ~/Library/Caches para las que hay reglas que ofrecen solo una parte («~/Library/Caches/Coursier/v1»):
+    /// la caché general de apps no las ofrece enteras.
+    static let carpetasDeCachesConReglas: Set<String> = {
+        var r = Set<String>()
+        for regla in reglas where regla.patron.hasPrefix("~/Library/Caches/") {
+            let partes = regla.patron.dropFirst("~/Library/Caches/".count).split(separator: "/")
+            guard partes.count > 1 || regla.modo != .carpeta, let primera = partes.first, !primera.contains("*") else { continue }
+            r.insert(String(primera))
+        }
+        return r
+    }()
+
+    /// Carpetas ocultas de tu carpeta personal («.sbt», «.lmstudio»…) para las que hay reglas.
+    static let carpetasOcultasConReglas: Set<String> = {
+        var r = Set<String>()
+        for regla in reglas where regla.patron.hasPrefix("~/.") {
+            guard let primera = regla.patron.dropFirst(2).split(separator: "/").first, !primera.contains("*") else { continue }
+            r.insert(String(primera))
+        }
+        return r
+    }()
+
     /// ¿Esta ruta sale de alguna regla del catálogo? Se usa para permitir borrar fuera de la carpeta personal
     /// solo lo que el catálogo conoce. `admin`: reglas que piden contraseña.
     static func cubre(_ ruta: String, admin: Bool, lista: [Regla] = Catalogo.reglas) -> Bool {
@@ -186,8 +238,11 @@ extension Catalogo {
                 if partes.count == patron.count && coincide(patron, partes) { return true }
             case .hijos:
                 if partes.count == patron.count + 1 && coincide(patron, Array(partes.prefix(patron.count))) { return true }
-            case .archivos:
-                if partes.count > patron.count && coincide(patron, Array(partes.prefix(patron.count))) { return true }
+            case .archivos(let extensiones):
+                let nombre = partes.last?.lowercased() ?? ""
+                if partes.count > patron.count && partes.count <= patron.count + 4
+                    && extensiones.contains(where: { nombre.hasSuffix("." + $0) })
+                    && coincide(patron, Array(partes.prefix(patron.count))) { return true }
             }
         }
         return false
