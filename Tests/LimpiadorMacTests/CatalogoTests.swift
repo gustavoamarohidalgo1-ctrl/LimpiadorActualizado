@@ -137,7 +137,9 @@ final class CatalogoTests: XCTestCase {
     func testCadaReglaPasaLaRevisionDeSeguridad() throws {
         let personales = ["Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music"].map { Rutas.home.path + "/" + $0 + "/" }
         for r in Catalogo.reglas {
-            var ejemplo = try XCTUnwrap(Escaner.absoluto(r.patron.replacingOccurrences(of: "*", with: "x")), r.id)
+            let patron = r.patron.replacingOccurrences(of: "[0-9]", with: "1").replacingOccurrences(of: "*", with: "x")
+            XCTAssertFalse(patron.contains("[") || patron.contains("?"), "comodín no admitido: \(r.id)")
+            var ejemplo = try XCTUnwrap(Escaner.absoluto(patron), r.id)
             switch r.modo {
             case .carpeta: break
             case .hijos: ejemplo += "/x"
