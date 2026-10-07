@@ -13,6 +13,8 @@ struct Contexto {
 final class Memoria: @unchecked Sendable {
     /// Archivos que son clones de APFS: comparten espacio con otra copia.
     var clones: [String: String] = [:]
+    /// Lo que encuentran los detectores con lógica propia, calculado una vez por análisis.
+    var detectados: [Elemento]?
     private var abiertos: ArchivosAbiertos?
 
     /// Lo que tienen abierto los programas (`lsof`), leído una sola vez por análisis.

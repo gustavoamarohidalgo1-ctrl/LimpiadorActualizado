@@ -80,6 +80,7 @@ struct Escaner {
         case .duplicados: elementos = duplicados(c)
         case .grandes: elementos = grandes(c, ofrecidas: ofrecidas)
         }
+        elementos += detectados(categoria, c)
         // Lo que ya ofreció una categoría anterior no se repite: ni la misma ruta, ni algo que está dentro,
         // ni algo que la contiene (se contaría dos veces). Los duplicados tienen su propia lógica de copias.
         if categoria != .duplicados && categoria != .grandes && !ofrecidas.isEmpty {
