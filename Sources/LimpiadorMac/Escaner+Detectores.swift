@@ -14,6 +14,8 @@ extension Escaner {
         let grupos: [(Contexto) -> [Elemento]] = [
             detectoresA_HuggingFace,
             detectoresA_ModelosLocales,
+            detectoresA_Conda,
+            detectoresA_AndroidYSimuladores,
         ]
         return grupos.flatMap { $0(c) }
     }

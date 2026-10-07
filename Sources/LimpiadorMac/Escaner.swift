@@ -546,8 +546,7 @@ struct Escaner {
         r += versionesAnterioresDeIDEs()
         r += editores(c)
         r += homebrew()
-        r += conda()
-        // Hugging Face se ofrece por partes (nunca la carpeta entera, que guarda tu token): ver DetectoresA+HuggingFace.
+        // Hugging Face y conda se ofrecen por partes en sus detectores (DetectoresA+HuggingFace, DetectoresA+Conda).
         return r
     }
 
@@ -910,7 +909,7 @@ struct Escaner {
         nombre.count >= 7 && nombre.allSatisfy { $0.isHexDigit }
     }
 
-    // MARK: Homebrew y conda
+    // MARK: Homebrew
 
     /// Versiones antiguas de fórmulas de Homebrew: lo mismo que borra «brew cleanup».
     private func homebrew() -> [Elemento] {
@@ -948,24 +947,6 @@ struct Escaner {
     private static func destinoDeEnlace(_ ruta: String) -> String? {
         guard let destino = try? FileManager.default.destinationOfSymbolicLink(atPath: ruta) else { return nil }
         return (destino as NSString).lastPathComponent
-    }
-
-    /// Paquetes comprimidos que conda ya descomprimió (lo que borra «conda clean --tarballs»).
-    private func conda() -> [Elemento] {
-        var r: [Elemento] = []
-        for raiz in ["miniconda3", "anaconda3", "miniforge3", "mambaforge", ".conda"] {
-            let comprimidos = Rutas.hijos(Rutas.enHome(raiz + "/pkgs"))
-                .filter { $0.lastPathComponent.hasSuffix(".tar.bz2") || $0.pathExtension == "conda" }
-            guard !comprimidos.isEmpty else { continue }
-            r.append(Elemento(
-                nombre: "Descargas de conda (\(raiz))",
-                detalle: "\(comprimidos.count) paquetes comprimidos que conda ya descomprimió.",
-                consecuencia: "Nada: los paquetes ya están instalados. Es lo mismo que «conda clean --tarballs».",
-                rutas: comprimidos, categoria: .desarrollo, riesgo: .seguro, seleccionado: true,
-                motivos: [.bien("archivebox.fill", "Ya descomprimidos", "Conda solo los necesita para instalar, y ya lo hizo.")],
-                enUso: .proceso(nombre: "conda", patron: "/bin/conda"), dueno: "conda"))
-        }
-        return r
     }
 
     // MARK: - Cachés de aplicaciones
