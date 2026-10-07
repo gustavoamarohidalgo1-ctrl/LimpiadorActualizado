@@ -19,7 +19,7 @@ extension Escaner {
                 return !vistas.contains(u.path) && !Rutas.estaDentro(u.path, de: vistas)
                     && !vistas.contains { $0.hasPrefix(prefijo) } && Self.sePuedeQuitar(u, admin: regla.requiereAdmin)
             }
-            if regla.id == "sistema-aerial" {
+            if regla.id == "sistema-aerial" || regla.id == "aerial-usuario-videos" {
                 // El vídeo que tienes de fondo o de salvapantallas no se ofrece; si no se sabe cuál es, ninguno.
                 guard let enUso = FondosEnUso.identificadores() else { continue }
                 rutas = rutas.filter { !enUso.contains($0.deletingPathExtension().lastPathComponent.uppercased()) }

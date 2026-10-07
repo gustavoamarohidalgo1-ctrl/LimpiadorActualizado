@@ -306,6 +306,8 @@ struct AppsInstaladas {
         "mobileactivationd", "rtcreportingd", "cleanupatstartup", "siritts", "colorsync", "desktoppictures", "metadata",
         "acapelagroup", "astris", "icdd", "quicklook", "internetaccounts", "personalizationportrait", "rtcreports",
         "smsmigrator", "trial", "assistant",
+        // Carpeta de guardado temporal de macOS (no es de ninguna app).
+        "temporaryitems",
     ]
 
     /// Carpetas que no se llaman como su app: «Mega Limited» es de MEGA, «com.dropbox.…» de Dropbox.

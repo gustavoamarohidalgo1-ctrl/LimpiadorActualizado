@@ -113,6 +113,15 @@ echo "10.2.4" > ".volta/tools/inventory/node/node-v20.11.0-npm"
 archivo "Library/Caches/ms-playwright/mcp-chrome-0123abcd/Default/Cookies" 2
 archivo ".copilot/logs/sesion.log" 2
 
+# Un modelo de Hugging Face con una revisión actual (c1, a la que apunta main) y otra antigua (c2).
+HF=".cache/huggingface/hub/models--org--modelo"
+archivo "$HF/blobs/aaa" 2
+archivo "$HF/blobs/bbb" 2
+mkdir -p "$HF/refs" "$HF/snapshots/c1" "$HF/snapshots/c2"
+printf c1 > "$HF/refs/main"
+ln -s ../../blobs/aaa "$HF/snapshots/c1/model.bin"
+ln -s ../../blobs/bbb "$HF/snapshots/c2/model.bin"
+
 # Trampas: nada de esto puede aparecer nunca en el análisis.
 archivo ".gemini/tmp/conversacion.json" 2
 archivo ".dropbox/instance1/config.dbx" 2

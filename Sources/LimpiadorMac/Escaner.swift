@@ -550,20 +550,7 @@ struct Escaner {
         r += editores(c)
         r += homebrew()
         r += conda()
-
-        let hf = Rutas.enHome(".cache/huggingface")
-        if Rutas.existe(hf) {
-            let modelos = Rutas.hijos(hf.appendingPathComponent("hub")).map(\.lastPathComponent)
-                .filter { $0.hasPrefix("models--") }
-                .map { String($0.dropFirst(8)).replacingOccurrences(of: "--", with: "/") }
-            r.append(Elemento(
-                nombre: "Modelos de IA (Hugging Face)",
-                detalle: modelos.isEmpty ? "Modelos de inteligencia artificial descargados." : "Modelos descargados: \(Formato.listaCorta(modelos)).",
-                consecuencia: "Si un programa vuelve a necesitar un modelo, lo descarga otra vez (pueden ser varios GB).",
-                rutas: [hf], categoria: .desarrollo, riesgo: .revisar,
-                motivos: [.info("arrow.down.circle.fill", "Descarga pesada", "Volver a descargarlos puede tardar bastante.")],
-                dueno: "Hugging Face"))
-        }
+        // Hugging Face se ofrece por partes (nunca la carpeta entera, que guarda tu token): ver DetectoresA+HuggingFace.
         return r
     }
 

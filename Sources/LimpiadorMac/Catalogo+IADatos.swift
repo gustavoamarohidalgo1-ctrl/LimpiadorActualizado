@@ -125,11 +125,6 @@ extension Catalogo {
               detalle: "Imágenes, audio y vídeos que subiste o que generaron las apps de Pinokio hechas con Gradio.",
               consecuencia: "Si generaste algo y no lo descargaste, puede que solo esté aquí: revísalo antes de borrar.")
             .en(.temporales).revisar().edad(dias: 7).sinArchivosAbiertos().app("Pinokio", "computer.pinokio"),
-        Regla("pinokio-modelos-hf", "~/pinokio/cache/HF_HOME/hub",
-              nombre: "Modelos de IA de Pinokio (Hugging Face)",
-              detalle: "Modelos de Hugging Face compartidos por todas las apps de Pinokio.",
-              consecuencia: "Cada app los vuelve a descargar la próxima vez que la abras (pueden ser decenas de GB).")
-            .en(.desarrollo).revisar().app("Pinokio", "computer.pinokio"),
         Regla("pinokio-modelos-torch", "~/pinokio/cache/TORCH_HOME",
               nombre: "Modelos de PyTorch de Pinokio",
               detalle: "Pesos de modelos que PyTorch descargó para las apps de Pinokio.",

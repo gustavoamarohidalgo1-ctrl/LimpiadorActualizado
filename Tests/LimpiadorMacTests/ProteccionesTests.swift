@@ -10,12 +10,14 @@ final class ProteccionesTests: XCTestCase {
                     "Library/Application Support/FileProvider/x", "Library/Caches/com.apple.bird/x",
                     "Library/Messages/chat.db", ".dropbox/instance1", ".pcloud/Cache/123", ".gemini/tmp/sesion",
                     ".cache/huggingface/token", ".kaggle/kaggle.json", "Library/Caches/com.apple.Safari.SafeBrowsing/x",
-                    "Library/Caches/x/com.apple.e5rt.e5bundlecache", "Pictures/Fotos.photoslibrary/database/Photos.sqlite"] {
+                    "Library/Caches/x/com.apple.e5rt.e5bundlecache", "Pictures/Fotos.photoslibrary/database/Photos.sqlite",
+                    "Library/Application Support/com.apple.wallpaper/Store/Index.plist"] {
             XCTAssertFalse(Seguridad.sePuedeBorrar(enHome(rel)), rel)
         }
         // Lo de al lado sí se puede.
         for rel in ["Library/Caches/com.ejemplo.app", ".cache/huggingface/hub/models--x", ".gemini/antigravity-browser-profile",
-                    "Library/Messages/Caches/Previews/Attachments/a", "Library/Caches/com.apple.Safari"] {
+                    "Library/Messages/Caches/Previews/Attachments/a", "Library/Caches/com.apple.Safari",
+                    "Library/Application Support/com.apple.wallpaper/aerials/videos/1234.mov"] {
             XCTAssertTrue(Seguridad.sePuedeBorrar(enHome(rel)), rel)
         }
         XCTAssertFalse(Seguridad.sePuedeBorrarComoAdmin(URL(fileURLWithPath: "/Library/Caches/com.apple.containermanagerd")))

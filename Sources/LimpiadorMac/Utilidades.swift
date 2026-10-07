@@ -195,7 +195,11 @@ enum Seguridad {
     ]
 
     /// Excepciones dentro de esas zonas: solo vistas previas que se regeneran.
-    private static let permitidasDentro: [String] = ["Library/Messages/Caches/Previews"].map { Rutas.home.path + "/" + $0 + "/" }
+    private static let permitidasDentro: [String] = [
+        "Library/Messages/Caches/Previews",
+        // Vídeos Aerial descargados para tu usuario (el que tienes puesto nunca se ofrece: ver FondosEnUso).
+        "Library/Application Support/com.apple.wallpaper/aerials/videos",
+    ].map { Rutas.home.path + "/" + $0 + "/" }
 
     /// ¿Está la ruta en algo que nunca se toca?
     static func esIntocable(_ p: String) -> Bool {
