@@ -32,6 +32,9 @@ final class ProteccionesTests: XCTestCase {
         XCTAssertTrue(Evaluador.enCarpetaSincronizada(enHome("Google Drive/a/b.txt").path))
         XCTAssertFalse(Evaluador.enCarpetaSincronizada(enHome("Dropbox").path))
         XCTAssertFalse(Evaluador.enCarpetaSincronizada(enHome("Proyectos/Dropbox/x").path))
+        // La caché interna de Dropbox y la papelera local de MEGA no se sincronizan.
+        XCTAssertFalse(Evaluador.enCarpetaSincronizada(enHome("Dropbox/.dropbox.cache/2026-01-01/a").path))
+        XCTAssertFalse(Evaluador.enCarpetaSincronizada(enHome("MEGA/.debris/2026-01-01/a").path))
     }
 
     func testFondosEnUsoDentroDePlistsAnidados() throws {

@@ -15,11 +15,6 @@ extension Catalogo {
               detalle: "Paquetes que el actualizador de Google o de Edge instalado para todos los usuarios guarda tras actualizar.",
               consecuencia: "Nada: la próxima actualización se descargará completa en lugar de solo los cambios. Tu navegador y tus datos no se tocan.")
             .admin().sinPreseleccion().proceso("Actualizador de Chrome o Edge", patron: "updater.app/contents/macos/"),
-        Regla("squirrel-shipit-antiguo", "~/Library/Application Support/*.ShipIt",
-              nombre: "Restos de actualizaciones de apps (ShipIt)",
-              detalle: "Carpetas que dejaban versiones antiguas del actualizador de apps como GitHub Desktop, Postman o GitKraken.",
-              consecuencia: "Nada: si hay una actualización pendiente, la app la vuelve a descargar.")
-            .edad(dias: 7).proceso("Actualizador ShipIt", patron: "shipit"),
         Regla("electron-updater-cache-xdg", "~/.cache/*-updater",
               nombre: "Actualizaciones descargadas de apps (carpeta .cache)",
               detalle: "Instaladores de actualizaciones que apps como Zulip, Workflowy o Beeper guardan después de actualizarse.",

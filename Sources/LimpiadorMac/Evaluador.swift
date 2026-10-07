@@ -176,6 +176,10 @@ enum Evaluador {
               ruta.count > h.count + primera.count else { return false }
         let nombre = String(primera)
         guard carpetasSincronizadas.contains(where: { fnmatch($0, nombre, 0) == 0 }) else { return false }
+        // Las carpetas internas de la propia app (caché de Dropbox, papelera local de MEGA, versiones de Resilio
+        // o Syncthing) no se sincronizan: borrarlas no borra nada en la nube.
+        let internas: Set<String> = [".dropbox.cache", ".debris", ".sync", ".stversions"]
+        if ruta.split(separator: "/").contains(where: { internas.contains(String($0)) }) { return false }
         // «Sync» solo cuenta si es de Resilio o Syncthing.
         if nombre == "Sync" {
             let raiz = h + nombre
