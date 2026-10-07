@@ -13,6 +13,7 @@ extension Escaner {
     private func todosLosDetectores(_ c: Contexto) -> [Elemento] {
         let grupos: [(Contexto) -> [Elemento]] = [
             detectoresA_HuggingFace,
+            detectoresA_ModelosLocales,
         ]
         return grupos.flatMap { $0(c) }
     }

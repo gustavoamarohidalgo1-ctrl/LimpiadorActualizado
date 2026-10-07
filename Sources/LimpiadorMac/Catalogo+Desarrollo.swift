@@ -213,8 +213,8 @@ extension Catalogo {
               consecuencia: "Tendrás que volver a descargar en LM Studio los modelos que quieras usar.")
             .en(.desarrollo).revisar().app("LM Studio", "ai.elementlabs.lmstudio"),
         Regla("lmstudio-modelos-antiguo", "~/.cache/lm-studio/models",
-              nombre: "Modelos de LM Studio (ubicación antigua)",
-              detalle: "Modelos de IA que descargaste en versiones anteriores de LM Studio.",
+              nombre: "Modelos de LM Studio (en ~/.cache/lm-studio)",
+              detalle: "Modelos de IA que descargaste en LM Studio. Según tu versión, esta es su carpeta actual o la de una versión anterior.",
               consecuencia: "Tendrás que volver a descargar en LM Studio los modelos que quieras usar.")
             .en(.desarrollo).revisar().app("LM Studio", "ai.elementlabs.lmstudio"),
     ]
