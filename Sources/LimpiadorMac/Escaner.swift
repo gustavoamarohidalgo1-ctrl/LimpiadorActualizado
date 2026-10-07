@@ -1688,9 +1688,10 @@ struct Escaner {
         // Copias sueltas de apps que ya están en Aplicaciones. Solo sobran si son la misma versión.
         for ruta in c.indice.apps {
             let url = URL(fileURLWithPath: ruta)
+            // Las copias de Xcode las trata su detector (conserva la que usa la terminal y la más nueva).
             guard let info = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist")),
                   let id = (info["CFBundleIdentifier"] as? String)?.lowercased(),
-                  c.apps.idsEnAplicaciones.contains(id) else { continue }
+                  c.apps.idsEnAplicaciones.contains(id), id != "com.apple.dt.xcode" else { continue }
             let nombre = url.deletingPathExtension().lastPathComponent
             let version = info["CFBundleShortVersionString"] as? String
             let instalada = c.apps.versionEnAplicaciones[id]

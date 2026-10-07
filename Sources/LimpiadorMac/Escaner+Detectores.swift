@@ -17,6 +17,7 @@ extension Escaner {
             detectoresA_Conda,
             detectoresA_AndroidYSimuladores,
             detectoresA_CachesSinDueno,
+            detectoresA_VersionesIDEsYAgentes,
         ]
         return grupos.flatMap { $0(c) }
     }
