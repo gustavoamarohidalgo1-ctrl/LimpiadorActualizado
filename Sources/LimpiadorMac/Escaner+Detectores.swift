@@ -16,6 +16,7 @@ extension Escaner {
             detectoresA_ModelosLocales,
             detectoresA_Conda,
             detectoresA_AndroidYSimuladores,
+            detectoresA_CachesSinDueno,
         ]
         return grupos.flatMap { $0(c) }
     }
