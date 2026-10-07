@@ -102,6 +102,25 @@ PLIST
   archivo "Library/Application Support/MobileSync/Backup/$copia/datos.bin" 2
 done
 
+# Cachés de desarrollo por partes (lo que no se puede borrar va aparte o no sale).
+archivo "Library/Caches/pypoetry/cache/repositories/pypi/indice" 2
+archivo "Library/Caches/pypoetry/artifacts/aa/paquete.whl" 2
+archivo "Library/Caches/pypoetry/virtualenvs/proyecto-AbCdEf-py3.12/lib/python3.12/site.py" 2
+archivo ".cargo/registry/src/index.crates.io-0000/serde-1.0/lib.rs" 2
+archivo ".cargo/registry/cache/index.crates.io-0000/serde-1.0.crate" 2
+archivo ".volta/tools/inventory/node/node-v20.11.0-darwin-arm64.tar.gz" 2
+echo "10.2.4" > ".volta/tools/inventory/node/node-v20.11.0-npm"
+archivo "Library/Caches/ms-playwright/mcp-chrome-0123abcd/Default/Cookies" 2
+archivo ".copilot/logs/sesion.log" 2
+
+# Trampas: nada de esto puede aparecer nunca en el análisis.
+archivo ".gemini/tmp/conversacion.json" 2
+archivo ".dropbox/instance1/config.dbx" 2
+archivo ".pcloud/Cache/subida-pendiente.bin" 2
+archivo "Library/Mobile Documents/com~apple~CloudDocs/Documentos/tesis.pdf" 2
+archivo "Library/Caches/com.apple.Safari.SafeBrowsing/base.db" 2
+archivo ".cache/huggingface/token" 1
+
 # Algo en la Papelera.
 archivo ".Trash/viejo.zip" 2
 

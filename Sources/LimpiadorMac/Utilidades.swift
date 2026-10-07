@@ -201,6 +201,8 @@ enum Seguridad {
     static func esIntocable(_ p: String) -> Bool {
         if nuncaDentro.contains(where: { p == $0 || p.hasPrefix($0 + "/") })
             && !permitidasDentro.contains(where: { p.hasPrefix($0) }) { return true }
+        // Tampoco una carpeta que tenga dentro algo intocable (la de Hugging Face con tu token, la de LM Studio con tus chats…).
+        if nuncaDentro.contains(where: { $0.hasPrefix(p + "/") && Rutas.existeSinSeguir($0) }) { return true }
         let partes = p.split(separator: "/")
         // Dentro de una fototeca solo manda Fotos.
         if partes.dropLast().contains(where: { $0.hasSuffix(".photoslibrary") }) { return true }

@@ -25,4 +25,9 @@ jobs:
         run: |
           CASA="$RUNNER_TEMP/casa"
           ./scripts/carpeta-de-prueba.sh "$CASA"
-          LIMPIADORMAC_HOME="$CASA" .build/release/LimpiadorMac --diagnostico --motivos
+          LIMPIADORMAC_HOME="$CASA" .build/release/LimpiadorMac --diagnostico --motivos | tee "$RUNNER_TEMP/diagnostico.txt"
+          # Lo protegido de la carpeta de prueba nunca puede aparecer en el análisis.
+          if grep -nE '\.gemini/tmp|\.dropbox|\.pcloud|Mobile Documents|SafeBrowsing|huggingface/token|~/\.cache/huggingface$' "$RUNNER_TEMP/diagnostico.txt"; then
+            echo "::error::El análisis ofreció algo protegido"
+            exit 1
+          fi

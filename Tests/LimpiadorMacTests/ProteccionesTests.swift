@@ -21,6 +21,12 @@ final class ProteccionesTests: XCTestCase {
         XCTAssertFalse(Seguridad.sePuedeBorrarComoAdmin(URL(fileURLWithPath: "/Library/Caches/com.apple.containermanagerd")))
     }
 
+    func testNiLaCarpetaQueContieneAlgoIntocable() throws {
+        // Solo cuenta si lo intocable existe de verdad: aquí no existe, así que la carpeta sí se puede borrar.
+        let carpeta = enHome(".cache/carpeta-de-prueba-\(UUID().uuidString)")
+        XCTAssertTrue(Seguridad.sePuedeBorrar(carpeta))
+    }
+
     func testCarpetasSincronizadas() {
         XCTAssertTrue(Evaluador.enCarpetaSincronizada(enHome("Dropbox/informe.pdf").path))
         XCTAssertTrue(Evaluador.enCarpetaSincronizada(enHome("Google Drive/a/b.txt").path))
